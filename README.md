@@ -1,36 +1,54 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Guessly
 
-## Getting Started
+A realtime multiplayer party game. Everyone sees the same thing at the same time,
+and the goal is to work out what it is faster than everybody else.
 
-First, run the development server:
+## Layout
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+A pnpm workspace driven by [Turborepo](https://turborepo.com):
+
+```
+apps/web/           # Next.js app. Renders UI. Holds no game state.
+apps/game/          # Node + Socket.IO server. Owns all lobby state, in memory.
+packages/protocol/  # Shared TypeScript types for every socket event.
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+`packages/protocol` is compiled to `dist` and depended on by both apps, so turbo
+builds it first and a changed message shape breaks the build on both sides
+instead of drifting into a runtime mismatch.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Getting started
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+pnpm install
+cp apps/web/.env.example apps/web/.env.local
+cp apps/game/.env.example apps/game/.env
+pnpm dev
+```
 
-## Learn More
+`pnpm dev` runs the web app on <http://localhost:3000>, the game server on
+<http://localhost:3001>, and `tsc --watch` on the protocol package behind both.
 
-To learn more about Next.js, take a look at the following resources:
+## Scripts
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Run these from the repo root; turbo fans them out and skips packages whose
+inputs have not changed.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+| Command | What it does |
+|---|---|
+| `pnpm dev` | Web, game server and protocol watcher together |
+| `pnpm build` | Builds protocol, then both apps |
+| `pnpm start` | Runs the production builds |
+| `pnpm lint` | ESLint |
+| `pnpm typecheck` | `tsc --noEmit` everywhere |
+| `pnpm test` | Unit and integration tests |
+| `pnpm clean` | Removes build output and turbo caches |
 
-## Deploy on Vercel
+To run a single package: `pnpm --filter @guessly/game dev`, or scope a turbo task
+with `pnpm turbo run build --filter @guessly/web`.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Deployment
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Two long-running Node processes on a host that can hold sockets and in-memory
+state (Railway, Fly.io, Render, a VPS) — *not* Vercel serverless. There is no
+database; nothing persists between sessions.

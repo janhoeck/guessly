@@ -1,3 +1,11 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+
+# tsx ships esbuild, which needs its postinstall to fetch the platform binary.
+onlyBuiltDependencies:
+  - esbuild
+
 ignoredBuiltDependencies:
   - sharp
   - unrs-resolver

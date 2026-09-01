@@ -1,0 +1,28 @@
+import * as React from "react"
+
+import { EntryForm } from "@/components/landing/entry-form"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { cn } from "@/lib/utils"
+
+/**
+ * The card the entry form sits in. Chrome only — it holds no state and takes no
+ * props from the form, so it keeps rendering on the server after EntryForm
+ * becomes a client island.
+ */
+function EntryPanel({ className, ...props }: React.ComponentProps<"div">) {
+  return (
+    <Card
+      className={cn("w-full max-w-md [--card-spacing:--spacing(6)]", className)}
+      {...props}
+    >
+      <CardHeader>
+        <CardTitle className="text-lg">Start playing</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <EntryForm />
+      </CardContent>
+    </Card>
+  )
+}
+
+export { EntryPanel }

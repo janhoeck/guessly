@@ -77,6 +77,41 @@ origin allowlist, never `*`.
 
 No database. Nothing persists between sessions.
 
+## Web UI
+
+`apps/web` renders on the server by default. A page is a composition: it holds
+no state, imports nothing from `lib/socket`, and has no reason to ever become a
+client component.
+
+**Client islands sit at the interaction boundary, not above it.** `"use client"`
+goes on the smallest component that genuinely needs state — never on the page or
+the card around it. On the landing page that island is
+`components/landing/entry-form.tsx`: when `lobby:create` and `lobby:join` are
+wired up, the directive, the state and the socket calls land in that one file,
+and the hero, card, round preview and step list around it keep rendering on the
+server untouched. New screens follow the same shape — find the control that
+needs to react, and stop the client boundary there.
+
+**Components are reusable and semantic.** One component per job, split so a
+future screen can take the piece it needs: `components/ui/` is shadcn-generated
+(never hand-edited — override at the call site with `className`, so `shadcn add`
+keeps working), `components/site/` is chrome shared across every screen, and
+`components/<route>/` is route-specific. Markup uses the real element —
+`<main>`, `<footer>`, `<form>`, `<label>`, `<ol>` — and anything purely
+decorative is `aria-hidden` so it does not narrate a fake scoreboard to a screen
+reader.
+
+**Numbers in copy come from `@guessly/protocol`**, not from the sentence.
+`ROUND_DURATION_MS`, `NICKNAME_MAX_LENGTH`, `MAX_PLAYERS_PER_LOBBY` and
+`DEFAULT_TARGET_SCORE` are all rendered rather than typed, so the pitch cannot
+drift away from what the server does.
+
+**Design system:** dark only, tokens in `app/globals.css` — read the comments
+there before touching a value, and run `pnpm test` after. The yellow `--primary`
+is the single call to action on a screen; `--brand-cyan` and `--brand-pink` are
+decorative only (rules, indicators, plates), never text and never a hover
+surface.
+
 ## Lobbies
 
 ```ts

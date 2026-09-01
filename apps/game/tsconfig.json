@@ -6,5 +6,7 @@
     "tsBuildInfoFile": "./dist/.tsbuildinfo",
     "types": ["node"]
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts"],
+  // Tests have no business in dist. tsconfig.typecheck.json still type checks them.
+  "exclude": ["node_modules", "dist", "src/**/*.test.ts"]
 }

@@ -1,22 +1,11 @@
 import { createServer } from "node:http";
 import { Server } from "socket.io";
-import type {
-  ClientToServerEvents,
-  InterServerEvents,
-  ServerToClientEvents,
-  SocketData,
-} from "@guessly/protocol";
+import { SWEEP_INTERVAL_MS } from "@guessly/protocol";
+import { loadConfig } from "./config.js";
+import { createLobbyStore } from "./lobby/store.js";
+import { registerSocketHandlers, type GameServer } from "./socket/register.js";
 
-const PORT = Number(process.env.PORT ?? 3001);
-
-/**
- * An explicit allowlist, never "*" — the socket is the only way into lobby
- * state, and that state is held in this process's memory.
- */
-const ALLOWED_ORIGINS = (process.env.CORS_ORIGINS ?? "http://localhost:3000")
-  .split(",")
-  .map((origin) => origin.trim())
-  .filter(Boolean);
+const config = loadConfig();
 
 const httpServer = createServer((req, res) => {
   if (req.url === "/health") {
@@ -29,33 +18,39 @@ const httpServer = createServer((req, res) => {
   res.end("Not found");
 });
 
-const io = new Server<
-  ClientToServerEvents,
-  ServerToClientEvents,
-  InterServerEvents,
-  SocketData
->(httpServer, {
-  cors: { origin: ALLOWED_ORIGINS, methods: ["GET", "POST"] },
+const io: GameServer = new Server(httpServer, {
+  cors: { origin: config.allowedOrigins, methods: ["GET", "POST"] },
+  /**
+   * Nothing in this protocol is larger than a nickname and a lobby code, so a
+   * megabyte of default headroom is a megabyte of attack surface.
+   */
+  maxHttpBufferSize: 8_192,
 });
 
-io.on("connection", (socket) => {
-  console.log(`[game] socket connected: ${socket.id}`);
+const store = createLobbyStore();
+const adapter = registerSocketHandlers(io, store);
 
-  // Lobby and round handlers are registered here. They stay thin: they
-  // validate the payload and call into the store, which owns every rule.
+/**
+ * The only timer in the server. Grace periods and both lobby TTLs are all
+ * evaluated here, which is what lets the store stay pure and testable with a
+ * fake clock instead of a fleet of setTimeouts.
+ */
+const sweepTimer = setInterval(() => {
+  try {
+    adapter.sweep();
+  } catch (error) {
+    console.error("[game] sweep failed", error);
+  }
+}, SWEEP_INTERVAL_MS);
 
-  socket.on("disconnect", (reason) => {
-    console.log(`[game] socket disconnected: ${socket.id} (${reason})`);
-  });
-});
-
-httpServer.listen(PORT, () => {
-  console.log(`[game] listening on :${PORT}`);
-  console.log(`[game] allowed origins: ${ALLOWED_ORIGINS.join(", ")}`);
+httpServer.listen(config.port, () => {
+  console.log(`[game] listening on :${config.port}`);
+  console.log(`[game] allowed origins: ${config.allowedOrigins.join(", ")}`);
 });
 
 const shutdown = (signal: string) => {
   console.log(`[game] ${signal} received, closing`);
+  clearInterval(sweepTimer);
   io.close(() => {
     httpServer.close(() => process.exit(0));
   });

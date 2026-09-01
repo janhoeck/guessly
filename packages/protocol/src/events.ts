@@ -43,7 +43,11 @@ export interface SetTargetPayload {
   targetScore: number;
 }
 
-export type LobbyClosedReason = "host_left" | "empty" | "idle";
+/**
+ * A lobby is never closed because the host left — the longest-present remaining
+ * player is promoted instead. Both reasons here come from the reaping sweep.
+ */
+export type LobbyClosedReason = "empty" | "idle";
 
 export interface LobbyClosedPayload {
   reason: LobbyClosedReason;

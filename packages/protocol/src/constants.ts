@@ -4,10 +4,21 @@ export const ROOM_CODE_LENGTH = 5;
 
 export const MAX_PLAYERS_PER_LOBBY = 12;
 
+/** Guessing alone is not a party game, so the host cannot start on their own. */
+export const MIN_PLAYERS_TO_START = 2;
+
 export const NICKNAME_MIN_LENGTH = 1;
 export const NICKNAME_MAX_LENGTH = 16;
 
 export const DEFAULT_TARGET_SCORE = 100;
+
+/**
+ * The bounds a host-set target is validated against. Both are arbitrary — they
+ * exist so the server has something to reject and the UI has something to
+ * render, rather than each inventing its own limit.
+ */
+export const MIN_TARGET_SCORE = 50;
+export const MAX_TARGET_SCORE = 500;
 
 /** Players have this long to type a guess once the content is shown. */
 export const ROUND_DURATION_MS = 20_000;

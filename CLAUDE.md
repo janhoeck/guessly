@@ -37,8 +37,22 @@ target when creating the lobby; the default is **100 points**.
 
 ## Topics
 
-Topics are picked at random for every round. Examples: flags, music, games,
-technology, logos, mainstream — and more.
+The catalogue lives in `packages/protocol/src/topics.ts` and is the one source
+both sides read: twelve topics, each carrying the `RoundKind` it produces.
+Eleven are `image`; `music` is the only `lyrics` topic, so a host who switches it
+off has quietly turned the game into pictures only — which is why the mapping is
+data rather than prose, and why the lobby can say so out loud.
+
+Every lobby stores its own selection. All twelve are on by default, at least one
+is required, and the stored list is deduplicated and kept in catalogue order, so
+two identical selections are literally equal however they were clicked.
+
+The host picks in the lobby modal, and may re-pick while the lobby is being set
+up — before the first round, or after a winner, ready for the next game — but
+never mid-game. Within a game, the topic for each round is still drawn at random
+from the selection.
+
+IDs are wire format and never change. Labels and hints are copy and may.
 
 ## Architecture
 
@@ -106,6 +120,18 @@ reader.
 `DEFAULT_TARGET_SCORE` are all rendered rather than typed, so the pitch cannot
 drift away from what the server does.
 
+**The lobby is a modal, not a route.** It is a room you are *in*, so it opens
+over the landing page from `components/landing/entry-form.tsx` — still the only
+client island there — with the connection itself one level down in
+`components/lobby/use-lobby.ts`, the sole thing in the client that talks to the
+game server. Everything under `components/lobby/` renders from the `LobbyState`
+it is handed and emits on interaction; **no control keeps its own copy of the
+selection it is editing.** The server sends a full snapshot on every mutation,
+so the broadcast is what moves the UI, and a second source of truth in the
+client would reintroduce exactly the drift the snapshot design exists to
+prevent. The dialog refuses Escape and outside clicks: a stray keystroke must
+not cost somebody the lobby they just read out to four friends.
+
 **Design system:** dark only, tokens in `app/globals.css` — read the comments
 there before touching a value, and run `pnpm test` after. The yellow `--primary`
 is the single call to action on a screen; `--brand-cyan` and `--brand-pink` are
@@ -130,6 +156,7 @@ interface Lobby {
   status: LobbyStatus
   targetScore: number // host-set, default 100
   hostId: string
+  topics: TopicId[]   // host-set, default all
   players: Map<string, Player>
   round: Round | null
   createdAt: number
@@ -148,8 +175,8 @@ input is uppercased.
 - Nicknames are 1–16 characters and unique within the lobby, case-insensitive.
 - Joining is only allowed while status is `lobby`. Late joiners cannot win from far
   behind; rejoining after a drop is handled by token instead.
-- The creator is host, and only the host can set the target score and start the
-  game.
+- The creator is host, and only the host can set the target score, pick the
+  topics and start the game.
 - If the host drops, the longest-present remaining player is promoted immediately,
   so one flaky connection cannot freeze everyone. A returning host does not take
   it back.
@@ -187,10 +214,11 @@ type Ack<T> =
 
 | Event | Payload | Ack |
 |---|---|---|
-| `lobby:create` | `{ nickname, targetScore }` | `{ code, playerId, resumeToken, state }` |
+| `lobby:create` | `{ nickname, targetScore, topics }` | `{ code, playerId, resumeToken, state }` |
 | `lobby:join` | `{ code, nickname }` | `{ playerId, resumeToken, state }` |
 | `lobby:resume` | `{ code, playerId, resumeToken }` | `{ state }` |
 | `lobby:setTarget` | `{ targetScore }` — host only | `{}` |
+| `lobby:setTopics` | `{ topics }` — host only, while `lobby` or `finished` | `{}` |
 | `lobby:start` | — host only | `{}` |
 | `lobby:leave` | — | `{}` |
 
@@ -215,9 +243,10 @@ render their countdown from a server-sent deadline. Client timestamps are never
 trusted — speed is the score here.
 
 **Errors:** `LOBBY_NOT_FOUND`, `LOBBY_FULL`, `GAME_IN_PROGRESS`, `NICKNAME_TAKEN`,
-`INVALID_NICKNAME`, `NOT_HOST`, `RATE_LIMITED`, and `RESUME_REJECTED` — on which
-the client clears `sessionStorage` and returns to the join screen rather than
-retrying forever.
+`INVALID_NICKNAME`, `INVALID_TARGET_SCORE`, `INVALID_TOPICS`, `NOT_HOST`,
+`NOT_ENOUGH_PLAYERS`, `RATE_LIMITED`, `SERVER_ERROR`, and `RESUME_REJECTED` — on
+which the client clears `sessionStorage` and returns to the join screen rather
+than retrying forever.
 
 Every payload is validated at the socket boundary; it is all untrusted input. A
 per-socket cap of ~20 events/sec stops one spammer from wedging the event loop.

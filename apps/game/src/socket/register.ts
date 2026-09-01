@@ -14,7 +14,7 @@ import {
 } from "@guessly/protocol";
 import type { LobbyStore } from "../lobby/store.js";
 import { createRateLimiter, type RateLimiter } from "./rate-limit.js";
-import { parseCreate, parseJoin, parseResume, parseSetTarget } from "./validate.js";
+import { parseCreate, parseJoin, parseResume, parseSetTarget, parseSetTopics } from "./validate.js";
 
 export type GameServer = Server<
   ClientToServerEvents,
@@ -175,6 +175,19 @@ export function registerSocketHandlers(io: GameServer, store: LobbyStore): Socke
         if (!parsed.ok) return parsed;
 
         const result = store.setTarget(seat.data.lobbyCode, seat.data.playerId, parsed.data.targetScore);
+        if (result.ok) broadcast(store.snapshot(seat.data.lobbyCode));
+        return result;
+      }),
+    );
+
+    socket.on("lobby:setTopics", (payload, ack) =>
+      run<Record<string, never>>(ack, limiter, () => {
+        const seat = requireSeat(socket);
+        if (!seat.ok) return seat;
+        const parsed = parseSetTopics(payload);
+        if (!parsed.ok) return parsed;
+
+        const result = store.setTopics(seat.data.lobbyCode, seat.data.playerId, parsed.data.topics);
         if (result.ok) broadcast(store.snapshot(seat.data.lobbyCode));
         return result;
       }),

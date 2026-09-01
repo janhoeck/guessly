@@ -1,3 +1,5 @@
+import type { TopicId } from "./topics.js";
+
 export type LobbyStatus = "lobby" | "in_round" | "intermission" | "finished";
 
 export interface Player {
@@ -21,5 +23,10 @@ export interface LobbyState {
   status: LobbyStatus;
   targetScore: number;
   hostId: string;
+  /**
+   * What rounds may be about. Always at least one, always in catalogue order,
+   * and public because every player is entitled to know what they are in for.
+   */
+  topics: TopicId[];
   players: Player[];
 }

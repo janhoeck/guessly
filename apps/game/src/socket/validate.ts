@@ -1,11 +1,14 @@
 import {
   err,
+  isTopicId,
   ok,
   type Ack,
   type CreateLobbyPayload,
   type JoinLobbyPayload,
   type ResumeLobbyPayload,
   type SetTargetPayload,
+  type SetTopicsPayload,
+  type TopicId,
 } from "@guessly/protocol";
 
 /**
@@ -22,12 +25,21 @@ import {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
 
+/**
+ * A `TopicId` *is* the primitive here — it is a closed union, so proving the
+ * field is what it claims to be means checking membership. How *many* topics a
+ * lobby needs is a rule, and stays in the store.
+ */
+const isTopicIdArray = (value: unknown): value is TopicId[] =>
+  Array.isArray(value) && value.every(isTopicId);
+
 export function parseCreate(raw: unknown): Ack<CreateLobbyPayload> {
   const payload = isRecord(raw) ? raw : {};
-  const { nickname, targetScore } = payload;
+  const { nickname, targetScore, topics } = payload;
   if (typeof nickname !== "string") return err("INVALID_NICKNAME", "A nickname is required.");
   if (typeof targetScore !== "number") return err("INVALID_TARGET_SCORE", "A target score is required.");
-  return ok({ nickname, targetScore });
+  if (!isTopicIdArray(topics)) return err("INVALID_TOPICS", "A list of topics is required.");
+  return ok({ nickname, targetScore, topics });
 }
 
 export function parseJoin(raw: unknown): Ack<JoinLobbyPayload> {
@@ -52,4 +64,11 @@ export function parseSetTarget(raw: unknown): Ack<SetTargetPayload> {
   const { targetScore } = payload;
   if (typeof targetScore !== "number") return err("INVALID_TARGET_SCORE", "A target score is required.");
   return ok({ targetScore });
+}
+
+export function parseSetTopics(raw: unknown): Ack<SetTopicsPayload> {
+  const payload = isRecord(raw) ? raw : {};
+  const { topics } = payload;
+  if (!isTopicIdArray(topics)) return err("INVALID_TOPICS", "A list of topics is required.");
+  return ok({ topics });
 }

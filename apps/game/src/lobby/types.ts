@@ -1,4 +1,4 @@
-import type { LobbyState, LobbyStatus, Player } from "@guessly/protocol";
+import type { LobbyState, LobbyStatus, Player, TopicId } from "@guessly/protocol";
 
 /**
  * A seat as the server holds it. The two extra fields are the reason this type
@@ -17,6 +17,8 @@ export interface LobbyRecord {
   status: LobbyStatus;
   targetScore: number;
   hostId: string;
+  /** Normalised on the way in: deduplicated and in catalogue order. */
+  topics: TopicId[];
   /** Insertion ordered, and never re-inserted, so this is join order. */
   players: Map<string, PlayerRecord>;
   createdAt: number;
@@ -34,6 +36,9 @@ export function toLobbyState(lobby: LobbyRecord): LobbyState {
     status: lobby.status,
     targetScore: lobby.targetScore,
     hostId: lobby.hostId,
+    // Copied, not shared: a snapshot handed to the wire must not be a handle
+    // on the live lobby's array.
+    topics: [...lobby.topics],
     players: [...lobby.players.values()].map((player) => ({
       id: player.id,
       nickname: player.nickname,

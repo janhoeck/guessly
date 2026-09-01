@@ -4,10 +4,13 @@ import {
   IDLE_LOBBY_TTL_MS,
   LOBBY_DISCONNECT_GRACE_MS,
   MAX_PLAYERS_PER_LOBBY,
+  ALL_TOPIC_IDS,
   MAX_TARGET_SCORE,
   MIN_TARGET_SCORE,
   type Ack,
+  type CreateLobbyPayload,
   type ErrorCode,
+  type TopicId,
 } from "@guessly/protocol";
 import { createLobbyStore } from "./store.js";
 
@@ -37,6 +40,14 @@ function testStore(...queuedCodes: string[]) {
   };
 }
 
+/**
+ * A valid create payload with only the field under test varied, so a new
+ * required field is one edit here rather than one per call site.
+ */
+function creating(overrides: Partial<CreateLobbyPayload> = {}): CreateLobbyPayload {
+  return { nickname: "jan", targetScore: 100, topics: [...ALL_TOPIC_IDS], ...overrides };
+}
+
 function unwrap<T>(result: Ack<T>): T {
   if (!result.ok) throw new Error(`expected ok, got ${result.error}: ${result.message}`);
   return result.data;
@@ -50,7 +61,7 @@ function failure(result: Ack<unknown>): ErrorCode {
 /** A lobby with `count` connected players. The first is the host. */
 function lobbyOf(count: number) {
   const harness = testStore();
-  const host = unwrap(harness.store.create({ nickname: "host", targetScore: 100 }));
+  const host = unwrap(harness.store.create(creating({ nickname: "host" })));
   const joiners = Array.from({ length: count - 1 }, (_, index) =>
     unwrap(harness.store.join({ code: host.code, nickname: `player${index + 2}` })),
   );
@@ -60,12 +71,13 @@ function lobbyOf(count: number) {
 describe("create", () => {
   it("seats the creator as a connected host on zero points", () => {
     const { store } = testStore("ABCDE");
-    const created = unwrap(store.create({ nickname: "jan", targetScore: 100 }));
+    const created = unwrap(store.create(creating({ nickname: "jan" })));
 
     expect(created.code).toBe("ABCDE");
     expect(created.state.hostId).toBe(created.playerId);
     expect(created.state.status).toBe("lobby");
     expect(created.state.targetScore).toBe(100);
+    expect(created.state.topics).toEqual([...ALL_TOPIC_IDS]);
     expect(created.state.players).toEqual([
       { id: created.playerId, nickname: "jan", score: 0, connected: true, disconnectedAt: null },
     ]);
@@ -73,7 +85,7 @@ describe("create", () => {
 
   it("trims the nickname", () => {
     const { store } = testStore();
-    const created = unwrap(store.create({ nickname: "  jan  ", targetScore: 100 }));
+    const created = unwrap(store.create(creating({ nickname: "  jan  " })));
     expect(created.state.players[0]?.nickname).toBe("jan");
   });
 
@@ -84,23 +96,23 @@ describe("create", () => {
     ["containing a newline", "ja\nn"],
   ])("rejects a nickname that is %s", (_label, nickname) => {
     const { store } = testStore();
-    expect(failure(store.create({ nickname, targetScore: 100 }))).toBe("INVALID_NICKNAME");
+    expect(failure(store.create(creating({ nickname })))).toBe("INVALID_NICKNAME");
   });
 
   it.each([MIN_TARGET_SCORE - 1, MAX_TARGET_SCORE + 1, 100.5, Number.NaN])(
     "rejects a target score of %s",
     (targetScore) => {
       const { store } = testStore();
-      expect(failure(store.create({ nickname: "jan", targetScore }))).toBe("INVALID_TARGET_SCORE");
+      expect(failure(store.create(creating({ targetScore })))).toBe("INVALID_TARGET_SCORE");
     },
   );
 
   it("retries until it finds a free code", () => {
     const { store, queueCodes } = testStore("ABCDE");
-    unwrap(store.create({ nickname: "first", targetScore: 100 }));
+    unwrap(store.create(creating({ nickname: "first" })));
 
     queueCodes("ABCDE", "ABCDE", "FGHJK");
-    const second = unwrap(store.create({ nickname: "second", targetScore: 100 }));
+    const second = unwrap(store.create(creating({ nickname: "second" })));
 
     expect(second.code).toBe("FGHJK");
     expect(store.size()).toBe(2);
@@ -108,10 +120,28 @@ describe("create", () => {
 
   it("gives up rather than looping forever when every code collides", () => {
     const { store, queueCodes } = testStore("ABCDE");
-    unwrap(store.create({ nickname: "first", targetScore: 100 }));
+    unwrap(store.create(creating({ nickname: "first" })));
 
     queueCodes(...Array.from({ length: 500 }, () => "ABCDE"));
-    expect(failure(store.create({ nickname: "second", targetScore: 100 }))).toBe("SERVER_ERROR");
+    expect(failure(store.create(creating({ nickname: "second" })))).toBe("SERVER_ERROR");
+  });
+
+  it("normalises the topic selection into catalogue order without duplicates", () => {
+    const { store } = testStore();
+    const created = unwrap(
+      store.create(creating({ topics: ["music", "flags", "music"] })),
+    );
+    expect(created.state.topics).toEqual(["flags", "music"]);
+  });
+
+  it.each([
+    ["empty", []],
+    ["only duplicates of nothing", []],
+    ["not a topic", ["flags", "quantum-physics"] as unknown as TopicId[]],
+    ["not even a list", "flags" as unknown as TopicId[]],
+  ])("rejects a topic selection that is %s", (_label, topics) => {
+    const { store } = testStore();
+    expect(failure(store.create(creating({ topics })))).toBe("INVALID_TOPICS");
   });
 });
 
@@ -227,6 +257,51 @@ describe("setTarget", () => {
     unwrap(store.start(code, host.playerId));
     expect(failure(store.setTarget(code, host.playerId, 250))).toBe("GAME_IN_PROGRESS");
   });
+});
+
+describe("setTopics", () => {
+  it("lets the host change the selection", () => {
+    const { store, code, host } = lobbyOf(2);
+    unwrap(store.setTopics(code, host.playerId, ["flags", "music"]));
+    expect(store.snapshot(code)?.topics).toEqual(["flags", "music"]);
+  });
+
+  it("normalises what it is given", () => {
+    const { store, code, host } = lobbyOf(2);
+    unwrap(store.setTopics(code, host.playerId, ["music", "music", "flags"]));
+    expect(store.snapshot(code)?.topics).toEqual(["flags", "music"]);
+  });
+
+  it("refuses anybody else", () => {
+    const { store, code, joiners } = lobbyOf(2);
+    expect(failure(store.setTopics(code, joiners[0]!.playerId, ["flags"]))).toBe("NOT_HOST");
+  });
+
+  it("refuses an empty selection, because a round needs something to be about", () => {
+    const { store, code, host } = lobbyOf(2);
+    expect(failure(store.setTopics(code, host.playerId, []))).toBe("INVALID_TOPICS");
+    expect(store.snapshot(code)?.topics).toEqual([...ALL_TOPIC_IDS]);
+  });
+
+  it("refuses an unknown topic", () => {
+    const { store, code, host } = lobbyOf(2);
+    const topics = ["flags", "underwater-basket-weaving"] as unknown as TopicId[];
+    expect(failure(store.setTopics(code, host.playerId, topics))).toBe("INVALID_TOPICS");
+  });
+
+  it("refuses once the game is running", () => {
+    const { store, code, host } = lobbyOf(2);
+    unwrap(store.start(code, host.playerId));
+    expect(failure(store.setTopics(code, host.playerId, ["flags"]))).toBe("GAME_IN_PROGRESS");
+  });
+
+  /**
+   * The other half of `CONFIGURABLE_STATUSES`. `finished` is unreachable
+   * through this API today — nothing sets it, because the round engine that
+   * declares a winner does not exist yet — so this is a todo rather than a
+   * test that quietly passes by never running the branch.
+   */
+  it.todo("allows a re-pick once a game has been won");
 });
 
 describe("start", () => {

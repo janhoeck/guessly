@@ -5,6 +5,7 @@ export type ErrorCode =
   | "NICKNAME_TAKEN"
   | "INVALID_NICKNAME"
   | "INVALID_TARGET_SCORE"
+  | "INVALID_TOPICS"
   | "NOT_HOST"
   | "NOT_ENOUGH_PLAYERS"
   | "RATE_LIMITED"

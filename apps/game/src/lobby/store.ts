@@ -1,4 +1,5 @@
 import {
+  ALL_TOPIC_IDS,
   EMPTY_LOBBY_TTL_MS,
   IDLE_LOBBY_TTL_MS,
   LOBBY_DISCONNECT_GRACE_MS,
@@ -6,8 +7,10 @@ import {
   MAX_TARGET_SCORE,
   MIN_PLAYERS_TO_START,
   MIN_TARGET_SCORE,
+  MIN_TOPICS,
   NICKNAME_MAX_LENGTH,
   NICKNAME_MIN_LENGTH,
+  isTopicId,
   err,
   ok,
   type Ack,
@@ -18,8 +21,10 @@ import {
   type JoinLobbyResult,
   type LobbyClosedReason,
   type LobbyState,
+  type LobbyStatus,
   type ResumeLobbyPayload,
   type ResumeLobbyResult,
+  type TopicId,
 } from "@guessly/protocol";
 import { generateCode, generatePlayerId, generateToken, tokensMatch } from "./codes.js";
 import { toLobbyState, type LobbyRecord, type PlayerRecord } from "./types.js";
@@ -49,6 +54,7 @@ export interface LobbyStore {
   join(payload: JoinLobbyPayload): Ack<JoinLobbyResult>;
   resume(payload: ResumeLobbyPayload): Ack<ResumeLobbyResult>;
   setTarget(code: string, playerId: string, targetScore: number): Ack<Record<string, never>>;
+  setTopics(code: string, playerId: string, topics: TopicId[]): Ack<Record<string, never>>;
   start(code: string, playerId: string): Ack<Record<string, never>>;
   /** Intentional exit. Returns the snapshot to broadcast, or null if there is nobody left to tell. */
   leave(code: string, playerId: string): LobbyState | null;
@@ -65,6 +71,23 @@ const MAX_CODE_ATTEMPTS = 100;
 
 /** Tabs, newlines and other C0/C1 controls would let a nickname wreck a scoreboard. */
 const CONTROL_CHARACTERS = /\p{Cc}/u;
+
+/**
+ * The phases in which a lobby is being *set up* rather than played: before the
+ * first round, and again once somebody has won and the room is deciding what to
+ * play next. Starting a game is deliberately not on this list — see `start`.
+ */
+const CONFIGURABLE_STATUSES: readonly LobbyStatus[] = ["lobby", "finished"];
+
+/**
+ * Deduplicated and sorted into catalogue order, so a lobby's topics read the
+ * same however the host clicked them and two identical selections are literally
+ * equal.
+ */
+const normalizeTopics = (topics: readonly TopicId[]): TopicId[] => {
+  const wanted = new Set<TopicId>(topics);
+  return ALL_TOPIC_IDS.filter((id) => wanted.has(id));
+};
 
 const normalizeCode = (code: string): string => code.trim().toUpperCase();
 
@@ -103,6 +126,21 @@ export function createLobbyStore(overrides: Partial<LobbyStoreDeps> = {}): Lobby
         ok: false,
         error: "INVALID_TARGET_SCORE",
         message: `The target score is a whole number from ${MIN_TARGET_SCORE} to ${MAX_TARGET_SCORE}.`,
+      };
+    }
+    return null;
+  };
+
+  const checkTopics = (topics: unknown): AckFailure | null => {
+    if (!Array.isArray(topics) || !topics.every(isTopicId)) {
+      return { ok: false, error: "INVALID_TOPICS", message: "That is not a topic." };
+    }
+    // Counted after deduplication, so ["flags", "flags"] is one topic and not two.
+    if (normalizeTopics(topics).length < MIN_TOPICS) {
+      return {
+        ok: false,
+        error: "INVALID_TOPICS",
+        message: `Pick at least ${MIN_TOPICS} topic.`,
       };
     }
     return null;
@@ -151,28 +189,37 @@ export function createLobbyStore(overrides: Partial<LobbyStoreDeps> = {}): Lobby
     if (fallback !== null) lobby.hostId = fallback;
   };
 
+  /**
+   * The statuses are a parameter rather than a constant because the host powers
+   * do not all open the same window: the target score and starting a game are
+   * settled before kick-off, while topics can also be re-picked once a game has
+   * been won.
+   */
   const requireHost = (
     code: string,
     playerId: string,
+    allowedStatuses: readonly LobbyStatus[],
   ): { lobby: LobbyRecord } | AckFailure => {
     const lobby = lobbies.get(normalizeCode(code));
     if (!lobby) return { ok: false, error: "LOBBY_NOT_FOUND", message: "That lobby no longer exists." };
     if (lobby.hostId !== playerId) {
       return { ok: false, error: "NOT_HOST", message: "Only the host can do that." };
     }
-    if (lobby.status !== "lobby") {
+    if (!allowedStatuses.includes(lobby.status)) {
       return { ok: false, error: "GAME_IN_PROGRESS", message: "The game has already started." };
     }
     return { lobby };
   };
 
   return {
-    create({ nickname, targetScore }) {
+    create({ nickname, targetScore, topics }) {
       const name = nickname.trim();
       const nameError = checkNickname(name);
       if (nameError) return nameError;
       const targetError = checkTargetScore(targetScore);
       if (targetError) return targetError;
+      const topicsError = checkTopics(topics);
+      if (topicsError) return topicsError;
 
       const code = allocateCode();
       if (code === null) {
@@ -186,6 +233,7 @@ export function createLobbyStore(overrides: Partial<LobbyStoreDeps> = {}): Lobby
         status: "lobby",
         targetScore,
         hostId: host.id,
+        topics: normalizeTopics(topics),
         players: new Map([[host.id, host]]),
         createdAt: now,
         lastActivityAt: now,
@@ -248,7 +296,7 @@ export function createLobbyStore(overrides: Partial<LobbyStoreDeps> = {}): Lobby
     },
 
     setTarget(code, playerId, targetScore) {
-      const host = requireHost(code, playerId);
+      const host = requireHost(code, playerId, ["lobby"]);
       if ("ok" in host) return host;
       const targetError = checkTargetScore(targetScore);
       if (targetError) return targetError;
@@ -258,8 +306,19 @@ export function createLobbyStore(overrides: Partial<LobbyStoreDeps> = {}): Lobby
       return ok({});
     },
 
+    setTopics(code, playerId, topics) {
+      const host = requireHost(code, playerId, CONFIGURABLE_STATUSES);
+      if ("ok" in host) return host;
+      const topicsError = checkTopics(topics);
+      if (topicsError) return topicsError;
+
+      host.lobby.topics = normalizeTopics(topics);
+      host.lobby.lastActivityAt = deps.now();
+      return ok({});
+    },
+
     start(code, playerId) {
-      const host = requireHost(code, playerId);
+      const host = requireHost(code, playerId, ["lobby"]);
       if ("ok" in host) return host;
 
       let connected = 0;

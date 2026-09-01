@@ -4,6 +4,7 @@ import { Server } from "socket.io";
 import { io as connectClient, type Socket as ClientSocket } from "socket.io-client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  ALL_TOPIC_IDS,
   IDLE_LOBBY_TTL_MS,
   RATE_LIMIT_EVENTS_PER_SEC,
   type Ack,
@@ -69,7 +70,11 @@ function unwrap<T>(result: Ack<T>): T {
 async function openLobby() {
   const host = await connect();
   const created = unwrap(
-    await emit<CreateLobbyResult>(host, "lobby:create", { nickname: "host", targetScore: 100 }),
+    await emit<CreateLobbyResult>(host, "lobby:create", {
+      nickname: "host",
+      targetScore: 100,
+      topics: [...ALL_TOPIC_IDS],
+    }),
   );
   return { host, created };
 }
@@ -81,6 +86,7 @@ describe("creating and joining", () => {
     expect(created.code).toHaveLength(5);
     expect(created.resumeToken).toHaveLength(64);
     expect(created.state.hostId).toBe(created.playerId);
+    expect(created.state.topics).toEqual([...ALL_TOPIC_IDS]);
   });
 
   it("pushes the new snapshot to everybody already in the lobby", async () => {
@@ -108,6 +114,16 @@ describe("creating and joining", () => {
       ok: false,
       error: "LOBBY_NOT_FOUND",
     });
+    expect(
+      await emit(guest, "lobby:create", {
+        nickname: "kim",
+        targetScore: 100,
+        topics: ["not-a-topic"],
+      }),
+    ).toMatchObject({ ok: false, error: "INVALID_TOPICS" });
+    expect(
+      await emit(guest, "lobby:create", { nickname: "kim", targetScore: 100, topics: "flags" }),
+    ).toMatchObject({ ok: false, error: "INVALID_TOPICS" });
     expect(await emit(guest, "lobby:create", { nickname: "kim", targetScore: "lots" })).toMatchObject(
       { ok: false, error: "INVALID_TARGET_SCORE" },
     );
@@ -123,6 +139,29 @@ describe("host powers", () => {
     const broadcast = nextEvent<LobbyState>(guest, "lobby:state");
     expect(await emit(host, "lobby:setTarget", { targetScore: 250 })).toMatchObject({ ok: true });
     expect((await broadcast).targetScore).toBe(250);
+  });
+
+  it("broadcasts a new topic selection", async () => {
+    const { host, created } = await openLobby();
+    const guest = await connect();
+    await emit(guest, "lobby:join", { code: created.code, nickname: "kim" });
+
+    const broadcast = nextEvent<LobbyState>(guest, "lobby:state");
+    expect(await emit(host, "lobby:setTopics", { topics: ["music", "flags"] })).toMatchObject({
+      ok: true,
+    });
+    expect((await broadcast).topics).toEqual(["flags", "music"]);
+  });
+
+  it("refuses a guest who tries to re-pick the topics", async () => {
+    const { created } = await openLobby();
+    const guest = await connect();
+    await emit(guest, "lobby:join", { code: created.code, nickname: "kim" });
+
+    expect(await emit(guest, "lobby:setTopics", { topics: ["flags"] })).toMatchObject({
+      ok: false,
+      error: "NOT_HOST",
+    });
   });
 
   it("refuses a guest who tries to start the game", async () => {

@@ -12,6 +12,8 @@ import {
   type ServerToClientEvents,
   type SocketData,
 } from "@guessly/protocol";
+import type { RoundContentSource } from "../content/source.js";
+import { createRoundRunner } from "../game/rounds.js";
 import type { LobbyStore } from "../lobby/store.js";
 import { createRateLimiter, type RateLimiter } from "./rate-limit.js";
 import { parseCreate, parseJoin, parseResume, parseSetTarget, parseSetTopics } from "./validate.js";
@@ -38,7 +40,11 @@ export interface SocketAdapter {
  * decision below is the store's; this file only moves data between it and the
  * wire.
  */
-export function registerSocketHandlers(io: GameServer, store: LobbyStore): SocketAdapter {
+export function registerSocketHandlers(
+  io: GameServer,
+  store: LobbyStore,
+  source: RoundContentSource,
+): SocketAdapter {
   /** `${code}:${playerId}` to socket id. One seat, one live socket. */
   const seats = new Map<string, string>();
   const seatKey = ({ lobbyCode, playerId }: Seat): string => `${lobbyCode}:${playerId}`;
@@ -46,6 +52,18 @@ export function registerSocketHandlers(io: GameServer, store: LobbyStore): Socke
   const broadcast = (state: LobbyState | null): void => {
     if (state) io.to(state.code).emit("lobby:state", state);
   };
+
+  /**
+   * Countdowns, content and the round clock. It is built here rather than
+   * handed in because it needs the two things only this file has: a way to
+   * broadcast, and a room to broadcast into.
+   */
+  const runner = createRoundRunner({
+    store,
+    source,
+    broadcast,
+    onFailed: (code, message) => io.to(code).emit("round:failed", { message }),
+  });
 
   const claimSeat = (socket: GameSocket, seat: Seat): void => {
     const key = seatKey(seat);
@@ -80,7 +98,11 @@ export function registerSocketHandlers(io: GameServer, store: LobbyStore): Socke
   /** Leaves whatever lobby this socket was in, for real. */
   const releaseSeat = (socket: GameSocket): void => {
     const seat = detachSeat(socket);
-    if (seat) broadcast(store.leave(seat.lobbyCode, seat.playerId));
+    if (!seat) return;
+    broadcast(store.leave(seat.lobbyCode, seat.playerId));
+    // The store drops a lobby the moment its last seat does. There is nothing
+    // left to build a round for, and the request in flight is now pointless.
+    if (store.snapshot(seat.lobbyCode) === null) runner.cancel(seat.lobbyCode);
   };
 
   const requireSeat = (socket: GameSocket): Ack<Seat> => {
@@ -198,9 +220,15 @@ export function registerSocketHandlers(io: GameServer, store: LobbyStore): Socke
         const seat = requireSeat(socket);
         if (!seat.ok) return seat;
 
-        const result = store.start(seat.data.lobbyCode, seat.data.playerId);
-        if (result.ok) broadcast(store.snapshot(seat.data.lobbyCode));
-        return result;
+        const started = store.start(seat.data.lobbyCode, seat.data.playerId);
+        if (!started.ok) return started;
+
+        // The countdown is already ticking in this snapshot. The content is
+        // fetched against it rather than before it, so the wait is spent
+        // watching a number fall.
+        broadcast(store.snapshot(seat.data.lobbyCode));
+        runner.begin(started.data);
+        return ok({});
       }),
     );
 
@@ -232,6 +260,7 @@ export function registerSocketHandlers(io: GameServer, store: LobbyStore): Socke
       for (const state of changed) io.to(state.code).emit("lobby:state", state);
 
       for (const { code, reason } of closed) {
+        runner.cancel(code);
         io.to(code).emit("lobby:closed", { reason });
         io.socketsLeave(code);
         for (const key of seats.keys()) {

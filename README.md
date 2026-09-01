@@ -23,8 +23,14 @@ instead of drifting into a runtime mismatch.
 pnpm install
 cp apps/web/.env.example apps/web/.env.local
 cp apps/game/.env.example apps/game/.env
+# then put a real key in apps/game/.env
 pnpm dev
 ```
+
+Rounds are built by Claude, so **`ANTHROPIC_API_KEY` is required** in
+`apps/game/.env`. The game server refuses to start without one — a server that
+cannot source a round would otherwise fail in front of players three clicks
+later. `ANTHROPIC_MODEL` is optional and defaults to `claude-opus-5`.
 
 `pnpm dev` runs the web app on <http://localhost:3000>, the game server on
 <http://localhost:3001>, and `tsc --watch` on the protocol package behind both.

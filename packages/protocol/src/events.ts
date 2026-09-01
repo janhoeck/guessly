@@ -60,13 +60,25 @@ export interface SetTopicsPayload {
  */
 export type LobbyClosedReason = "empty" | "idle";
 
+/**
+ * The round could not be built — the content source refused, timed out, or
+ * returned nothing reachable. The lobby is already back in `lobby` status by
+ * the time this arrives; the snapshot says *what* happened and this says *why*,
+ * because "you are suddenly back in the lobby" is not an explanation.
+ */
+export interface RoundFailedPayload {
+  message: string;
+}
+
 export interface LobbyClosedPayload {
   reason: LobbyClosedReason;
 }
 
 /**
- * Round events are higher-frequency and may need to be narrower than a full
- * snapshot; they are specified with the game loop, along with `round:guess`.
+ * Guessing (`round:guess`) is higher-frequency than a lobby mutation and will
+ * need a narrower shape than a full snapshot; it is specified with the rest of
+ * the scoring loop. Round *lifecycle* — countdown, content, reveal — is two
+ * broadcasts a round, so it rides in the snapshot like everything else.
  */
 export interface ClientToServerEvents {
   "lobby:create": (
@@ -104,6 +116,7 @@ export interface ServerToClientEvents {
   /** Sent in full on every lobby mutation. There are no incremental events. */
   "lobby:state": (state: LobbyState) => void;
   "lobby:closed": (payload: LobbyClosedPayload) => void;
+  "round:failed": (payload: RoundFailedPayload) => void;
 }
 
 /** Reserved for socket.io's server-to-server channel; unused for now. */

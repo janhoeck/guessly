@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import { Server } from "socket.io";
 import { SWEEP_INTERVAL_MS } from "@guessly/protocol";
 import { loadConfig } from "./config.js";
+import { createClaudeRoundSource } from "./content/claude.js";
 import { createLobbyStore } from "./lobby/store.js";
 import { registerSocketHandlers, type GameServer } from "./socket/register.js";
 
@@ -28,12 +29,17 @@ const io: GameServer = new Server(httpServer, {
 });
 
 const store = createLobbyStore();
-const adapter = registerSocketHandlers(io, store);
+const source = createClaudeRoundSource({
+  apiKey: config.anthropicApiKey,
+  model: config.anthropicModel,
+});
+const adapter = registerSocketHandlers(io, store, source);
 
 /**
- * The only timer in the server. Grace periods and both lobby TTLs are all
- * evaluated here, which is what lets the store stay pure and testable with a
- * fake clock instead of a fleet of setTimeouts.
+ * The lobby's timer. Grace periods and both lobby TTLs are all evaluated here,
+ * which is what lets the store stay pure and testable with a fake clock instead
+ * of a fleet of setTimeouts. Rounds have their own, short-lived timers — see
+ * game/rounds.ts — because a countdown cannot wait up to a minute to be noticed.
  */
 const sweepTimer = setInterval(() => {
   try {
@@ -46,6 +52,7 @@ const sweepTimer = setInterval(() => {
 httpServer.listen(config.port, () => {
   console.log(`[game] listening on :${config.port}`);
   console.log(`[game] allowed origins: ${config.allowedOrigins.join(", ")}`);
+  console.log(`[game] rounds sourced from ${config.anthropicModel}`);
 });
 
 const shutdown = (signal: string) => {

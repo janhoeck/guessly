@@ -23,6 +23,14 @@ export const MAX_TARGET_SCORE = 500;
 /** Players have this long to type a guess once the content is shown. */
 export const ROUND_DURATION_MS = 20_000;
 
+/**
+ * The beat between "start" and the first round: long enough for everybody to
+ * land on the game screen and look up, short enough that nobody wanders off.
+ * It runs whether or not the content is ready, so the wait for the AI is spent
+ * on a countdown rather than on a spinner.
+ */
+export const COUNTDOWN_DURATION_MS = 3_000;
+
 /** Before the game starts, a dropped player loses their seat this fast. */
 export const LOBBY_DISCONNECT_GRACE_MS = 60_000;
 

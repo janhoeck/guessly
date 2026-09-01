@@ -10,11 +10,77 @@ Each round follows the same cycle:
 
 1. A topic is picked at random.
 2. An AI sources a matching piece of content for that topic (an image, or a snippet
-   of song lyrics).
+   of song lyrics) *and the question to ask about it*.
 3. The content is shown to all players simultaneously.
 4. Players have **20 seconds** to type their guess.
 5. The correct answer is revealed and points are awarded.
 6. Repeat until a player reaches the target score.
+
+**Every round carries a question** — "Which country's flag is this?", "Who sings
+this?" — sourced with the content rather than derived from the topic, because
+the right question depends on the subject and not on the category it came from.
+A round about a person asks who; the same topic's next round might ask what a
+place is called.
+
+Steps 4–6 are not built yet. See Open Questions: answer matching and the scoring
+curve are still undecided, and nothing should assume an answer to either.
+
+## Starting a Game
+
+Pressing start does not open a round. It opens a **countdown**, and the content
+is fetched against it:
+
+1. `lobby:start` moves the lobby to `countdown` and stamps `round.startsAt` at
+   `now + COUNTDOWN_DURATION_MS`. The snapshot goes out immediately.
+2. Every client — host and guests alike — sees `status` leave `lobby` and
+   navigates to `/<CODE>`. The lobby modal on `/` is for a lobby; a game is a
+   place you are at.
+3. The countdown runs 3 · 2 · 1 · GO while the AI is asked for the round.
+4. The round goes live when **both** are done. The countdown is a floor, not a
+   target: content that arrives early waits for it, and content that arrives
+   late starts the clock from when it lands, so nobody is handed a round that is
+   already half over.
+5. At `endsAt` the server reveals the answer and moves to `intermission`.
+
+If the content cannot be built at all, the lobby goes back to `lobby`, everybody
+is returned to `/`, and `round:failed` says why. A game that quietly strands
+five people on a countdown is worse than one that admits it failed.
+
+The three seconds are spent on a countdown rather than a spinner because the
+wait is real — a web search takes as long as it takes — and a number falling is
+a better thing to watch than a wheel turning.
+
+## Sourcing Content
+
+`apps/game/src/content/` asks Claude for a round. Three things make the reply
+safe to parse, and none of them is hope:
+
+- **It is a `strict` tool call, not prose.** `submit_round` carries a JSON Schema
+  with `additionalProperties: false`, so the input validates by construction.
+  There is no fenced block to find and no preamble to strip.
+- **It is read back through `parseSubmission`.** The schema promises shape; the
+  parser enforces the *rules* a schema cannot express — an answer short enough
+  to type, a question that does not name the answer, a lyrics snippet that does
+  not give the song away, a URL that could be an image.
+- **A rejected round is asked for again with the reason.** Re-rolling the same
+  prompt tends to make the same mistake; naming the mistake does not.
+
+Image rounds get the `web_search` server tool and return up to three candidate
+URLs, best first. Each is probed — HEAD, then a ranged GET, checking for an
+`image/*` content type — and the first that answers wins; the browser's own
+`onError` is the last mile, because a host can serve the server and still refuse
+a browser. Lyrics rounds get no search: a paraphrase is written from what the
+model already knows, and the two tool lists are stable so each keeps its own
+cached prompt prefix.
+
+**Lyrics are never reproduced.** The prompt asks for a 3–5 line paraphrase — the
+same imagery, person and running order, none of the actual words — and the UI
+labels it "lyrics, paraphrased" rather than letting anyone assume otherwise.
+Real lyrics are copyrighted and this game does not quote them.
+
+`ANTHROPIC_API_KEY` is required at boot. A server that cannot build a round will
+fail in front of players three clicks later, and a crash at start-up says so far
+more loudly.
 
 ## Scoring
 
@@ -120,17 +186,39 @@ reader.
 `DEFAULT_TARGET_SCORE` are all rendered rather than typed, so the pitch cannot
 drift away from what the server does.
 
-**The lobby is a modal, not a route.** It is a room you are *in*, so it opens
-over the landing page from `components/landing/entry-form.tsx` — still the only
-client island there — with the connection itself one level down in
-`components/lobby/use-lobby.ts`, the sole thing in the client that talks to the
-game server. Everything under `components/lobby/` renders from the `LobbyState`
-it is handed and emits on interaction; **no control keeps its own copy of the
-selection it is editing.** The server sends a full snapshot on every mutation,
-so the broadcast is what moves the UI, and a second source of truth in the
-client would reintroduce exactly the drift the snapshot design exists to
-prevent. The dialog refuses Escape and outside clicks: a stray keystroke must
-not cost somebody the lobby they just read out to four friends.
+**The lobby is a modal; the game is a route.** A lobby is a room you are *in*,
+so it opens over the landing page from `components/landing/entry-form.tsx` —
+still the only client island there. A running game is somewhere you have gone,
+so it is `/<CODE>`, and `components/game/game-room.tsx` is that page's only
+island. Both render from the same `LobbyState` and emit on interaction; **no
+control keeps its own copy of the selection it is editing.** The server sends a
+full snapshot on every mutation, so the broadcast is what moves the UI, and a
+second source of truth in the client would reintroduce exactly the drift the
+snapshot design exists to prevent. The lobby dialog refuses Escape and outside
+clicks: a stray keystroke must not cost somebody the lobby they just read out to
+four friends.
+
+**The connection lives outside the component tree**, in `lib/lobby-client.ts` —
+a module singleton exposed to React through `useSyncExternalStore` in
+`components/lobby/use-lobby.ts`. That is not premature cleverness; it is the
+navigation. Pressing start moves every player from `/` to `/<CODE>`, and a
+connection owned by either page's tree would be torn down and re-established in
+the middle of the countdown. It is still not a second source of truth: the only
+thing kept is the last snapshot the server sent, replaced whole.
+
+**Each screen decides where it belongs, once.** `/<CODE>` resolves four
+possibilities — the seat is still being reclaimed, there is no seat, the seat is
+in a different lobby, the lobby is a lobby again — into a single route to go to.
+Arriving with no seat sends you to `/?code=<CODE>` with the join field filled
+in, because the usual way to reach that URL is a link somebody pasted into the
+group chat.
+
+**The server owns the clock, so the client measures its own drift.** Every
+snapshot carries `serverNow` alongside its deadlines, and `serverNow()` in
+`lib/lobby-client.ts` is `Date.now()` plus the offset from the last one. A
+laptop four minutes fast still renders a correct countdown. Timers tick on
+`requestAnimationFrame` (`components/game/use-server-clock.ts`), which is smooth
+for the bar and stops on its own in a background tab.
 
 **Design system:** dark only, tokens in `app/globals.css` — read the comments
 there before touching a value, and run `pnpm test` after. The yellow `--primary`
@@ -141,7 +229,10 @@ surface.
 ## Lobbies
 
 ```ts
-type LobbyStatus = 'lobby' | 'in_round' | 'intermission' | 'finished'
+// `countdown` is a phase of its own rather than an early `in_round`: a
+// countdown waits on a clock, a round waits on twelve people typing.
+type LobbyStatus =
+  | 'lobby' | 'countdown' | 'in_round' | 'intermission' | 'finished'
 
 interface Player {
   id: string          // server-issued; this is the seat identity
@@ -159,8 +250,24 @@ interface Lobby {
   topics: TopicId[]   // host-set, default all
   players: Map<string, Player>
   round: Round | null
+  usedAnswers: string[]  // this game's answers, so a source can avoid repeats
   createdAt: number
   lastActivityAt: number
+}
+
+// The server's round record. `answer` and `aliases` are held back from the wire
+// until the reveal — the snapshot goes to everybody, so an answer in it one
+// broadcast early is an answer on somebody's screen one broadcast early.
+interface Round {
+  number: number          // 1-based; every transition quotes it back
+  topic: TopicId
+  kind: RoundKind
+  startsAt: number        // the countdown's zero
+  endsAt: number | null   // startsAt + ROUND_DURATION_MS, once live
+  content: RoundContent | null   // { question, imageUrl } or { question, snippet }
+  answer: string | null
+  aliases: string[]
+  revealed: boolean
 }
 ```
 
@@ -226,8 +333,9 @@ type Ack<T> =
 
 | Event | Payload |
 |---|---|
-| `lobby:state` | full lobby snapshot |
+| `lobby:state` | full lobby snapshot, including `round` and `serverNow` |
 | `lobby:closed` | `{ reason }` |
+| `round:failed` | `{ message }` — the lobby is already back in `lobby` status |
 
 The server sends a **full snapshot on every lobby mutation** — no incremental
 `player_joined` / `host_changed` events. A 12-player lobby is a few hundred bytes,
@@ -235,8 +343,10 @@ so deltas would save nothing measurable while introducing the class of bugs wher
 client silently drifts out of sync. The client renders from one object it always
 trusts.
 
-Round events are higher-frequency and may need to be narrower; they are specified
-with the game loop, along with `round:guess`.
+Round *lifecycle* — countdown, content, reveal — is two broadcasts a round, so it
+rides in the snapshot like everything else. Guessing (`round:guess`) is the
+higher-frequency one and will need a narrower shape; it is specified with the
+scoring loop.
 
 **The server owns the clock.** It stamps when each guess *arrives*, and clients
 render their countdown from a server-sent deadline. Client timestamps are never
@@ -258,20 +368,35 @@ and `create` / `join` / `resume` / `leave` / `start` / `disconnect` / `sweep` ta
 and return plain data.
 
 That puts every rule above — host promotion, nickname collisions, both grace
-periods, the reaping sweep — under fast deterministic unit tests with a fake clock.
-A thin adapter maps socket events to store calls; integration tests with a real
-Socket.IO client cover join → drop → resume and the error acks.
+periods, the reaping sweep, and the round's own state machine — under fast
+deterministic unit tests with a fake clock. A thin adapter maps socket events to
+store calls; integration tests with a real Socket.IO client cover join → drop →
+resume and the error acks.
 
 **No game logic in the socket handlers.**
+
+The round's *timers* and the network call cannot be pure, so they are quarantined
+in `game/rounds.ts`, which owns them and decides nothing — every decision it
+makes it makes by asking the store, quoting the round number back so a slow
+answer to an abandoned round is refused rather than guarded against.
+
+`RoundContentSource` is the seam this hangs on: `store.start` issues a plain
+`RoundRequest` and never learns how it is answered, so a live model, a fixture
+and a stub are interchangeable. The socket tests drive a stub; `content/` is
+tested through `parseSubmission`, which is where "the model said something
+strange" has to come back as a rejection rather than a throw.
 
 ## Open Questions
 
 These are deliberately not decided yet. Ask before assuming an answer:
 
 - **Answer matching** — are free-text guesses fuzzy-matched? How tolerant is it of
-  typos, alternative spellings and aliases (e.g. "USA" vs "United States")?
-- **Content sourcing** — which AI/search provider finds the images and lyrics, and
-  does it run per round or prefetch ahead of the players?
-- **Content repetition** — how do we stop the same image or song appearing twice
-  within a game, or across games?
+  typos, alternative spellings and aliases (e.g. "USA" vs "United States")? The
+  source already returns an `aliases` list per round; nothing consumes it yet.
 - **Scoring curve** — the exact formula mapping answer time to points.
+- **Content repetition across games** — within a game, `usedAnswers` is handed to
+  the source as an exclusion list. Across games there is nothing, because there
+  is no database and nothing persists between sessions.
+- **Prefetching** — content is fetched when the round opens, so the players pay
+  the latency once per round behind the countdown. Sourcing round *n+1* during
+  round *n* would hide it entirely, and is worth doing once the loop exists.

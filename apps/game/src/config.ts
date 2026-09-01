@@ -5,7 +5,17 @@ export interface Config {
    * state, and that state is held in this process's memory.
    */
   allowedOrigins: string[];
+  /** Rounds are built by Claude, so there is no game without this. */
+  anthropicApiKey: string;
+  anthropicModel: string;
 }
+
+/**
+ * Overridable so a deploy can move off it without a release, but not something
+ * to tune casually — the prompt in content/prompt.ts is written for a model
+ * that can search and follow a strict tool schema.
+ */
+const DEFAULT_MODEL = "claude-opus-5";
 
 /**
  * Read once at boot and throw on anything wrong. A misconfigured origin list is
@@ -30,5 +40,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     throw new Error('CORS_ORIGINS must name origins explicitly; "*" is never allowed');
   }
 
-  return { port, allowedOrigins };
+  // Checked at boot for the same reason as the origin list: a server that
+  // cannot build a round is a server that will fail in front of players three
+  // clicks later, and a crash at start-up says so far more loudly.
+  const anthropicApiKey = (env.ANTHROPIC_API_KEY ?? "").trim();
+  if (!anthropicApiKey) {
+    throw new Error(
+      "ANTHROPIC_API_KEY is required — rounds are sourced from Claude. Copy apps/game/.env.example to apps/game/.env and set it.",
+    );
+  }
+
+  const anthropicModel = (env.ANTHROPIC_MODEL ?? DEFAULT_MODEL).trim() || DEFAULT_MODEL;
+
+  return { port, allowedOrigins, anthropicApiKey, anthropicModel };
 }

@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import { useRouter, useSearchParams } from "next/navigation"
 import {
   ALL_TOPIC_IDS,
   DEFAULT_TARGET_SCORE,
@@ -33,11 +34,34 @@ import { Separator } from "@/components/ui/separator"
  *
  * A lobby cannot be made anonymously — there is no seat without a name — so
  * both buttons stay disabled until there is one to send.
+ *
+ * It also owns one navigation: the moment the lobby stops being a lobby,
+ * everybody in it — host and guests alike — is moved to `/<CODE>`, because a
+ * game is a place you are at rather than a dialog over the page that sold it to
+ * you. The connection itself does not notice the move; it lives outside the
+ * component tree for exactly this reason.
  */
 function EntryForm() {
+  const router = useRouter()
+  const searchParams = useSearchParams()
   const [nickname, setNickname] = React.useState("")
-  const [code, setCode] = React.useState("")
+  // Seeded from `?code=`, which is how somebody arrives after following a link
+  // to a game they have no seat in. They still have to give a nickname, so this
+  // is a shortcut and not a redirect.
+  const [code, setCode] = React.useState(() =>
+    (searchParams.get("code") ?? "").toUpperCase().slice(0, ROOM_CODE_LENGTH)
+  )
   const lobby = useLobby()
+
+  const startedCode =
+    lobby.state && lobby.state.status !== "lobby" ? lobby.state.code : null
+
+  // `replace` rather than `push`: the landing page would immediately send a
+  // player who pressed Back straight forward again, which is a trap rather
+  // than a history entry.
+  React.useEffect(() => {
+    if (startedCode) router.replace(`/${startedCode}`)
+  }, [startedCode, router])
 
   const name = nickname.trim()
   const hasNickname = name.length >= NICKNAME_MIN_LENGTH
@@ -142,7 +166,7 @@ function EntryForm() {
         </div>
       </form>
 
-      {lobby.state && lobby.playerId && (
+      {lobby.state && lobby.playerId && lobby.state.status === "lobby" && (
         <LobbyDialog
           state={lobby.state}
           playerId={lobby.playerId}

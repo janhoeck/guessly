@@ -1,4 +1,12 @@
-import type { LobbyState, LobbyStatus, Player, TopicId } from "@guessly/protocol";
+import type {
+  LobbyState,
+  LobbyStatus,
+  Player,
+  RoundContent,
+  RoundKind,
+  RoundState,
+  TopicId,
+} from "@guessly/protocol";
 
 /**
  * A seat as the server holds it. The two extra fields are the reason this type
@@ -12,6 +20,31 @@ export interface PlayerRecord extends Player {
   resumeToken: string;
 }
 
+/**
+ * A round as the server holds it. Same trick as `PlayerRecord`: the fields that
+ * decide the game — the answer and what else counts as it — live here and are
+ * projected out, so the only way to leak an answer early is to edit
+ * `toRoundState`.
+ */
+export interface RoundRecord {
+  number: number;
+  topic: TopicId;
+  kind: RoundKind;
+  startsAt: number;
+  endsAt: number | null;
+  content: RoundContent | null;
+  /** Null until the content source answers. */
+  answer: string | null;
+  /**
+   * What else counts as the answer — "USA" for "United States", the artist for
+   * a song. Unused until guesses are scored, but it arrives with the answer and
+   * throwing it away here would mean asking for it twice.
+   */
+  aliases: string[];
+  /** The reveal. Until this flips, `answer` does not go on the wire. */
+  revealed: boolean;
+}
+
 export interface LobbyRecord {
   code: string;
   status: LobbyStatus;
@@ -21,16 +54,45 @@ export interface LobbyRecord {
   topics: TopicId[];
   /** Insertion ordered, and never re-inserted, so this is join order. */
   players: Map<string, PlayerRecord>;
+  round: RoundRecord | null;
+  /**
+   * Every answer this game has already used, lower-cased. Handed to the content
+   * source so it does not serve the same flag twice in one sitting.
+   */
+  usedAnswers: string[];
   createdAt: number;
   lastActivityAt: number;
+}
+
+/**
+ * The one place an answer is allowed to reach the wire, and only once
+ * `revealed` says the round is over. Everything else about a round is public
+ * from the moment it exists.
+ */
+function toRoundState(round: RoundRecord | null): RoundState | null {
+  if (round === null) return null;
+  return {
+    number: round.number,
+    topic: round.topic,
+    kind: round.kind,
+    startsAt: round.startsAt,
+    endsAt: round.endsAt,
+    // Treated as immutable from the moment the source hands it over; nothing
+    // downstream of here writes to it.
+    content: round.content,
+    answer: round.revealed ? round.answer : null,
+  };
 }
 
 /**
  * The only path from a LobbyRecord to something broadcastable. Each player is
  * rebuilt field by field rather than spread, so adding a secret to
  * `PlayerRecord` cannot silently leak it into every client's snapshot.
+ *
+ * `now` is a parameter because the snapshot carries the clock the deadlines in
+ * it are stamped against — see `LobbyState.serverNow`.
  */
-export function toLobbyState(lobby: LobbyRecord): LobbyState {
+export function toLobbyState(lobby: LobbyRecord, now: number): LobbyState {
   return {
     code: lobby.code,
     status: lobby.status,
@@ -46,5 +108,7 @@ export function toLobbyState(lobby: LobbyRecord): LobbyState {
       connected: player.connected,
       disconnectedAt: player.disconnectedAt,
     })),
+    round: toRoundState(lobby.round),
+    serverNow: now,
   };
 }

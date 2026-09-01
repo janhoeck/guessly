@@ -12,7 +12,13 @@ import {
   type JoinLobbyResult,
   type LobbyClosedPayload,
   type LobbyState,
+  type RoundContent,
 } from "@guessly/protocol";
+import {
+  RoundSourceError,
+  type RoundContentSource,
+  type SourcedRound,
+} from "../content/source.js";
 import { createLobbyStore, type LobbyStore } from "../lobby/store.js";
 import { registerSocketHandlers, type GameServer, type SocketAdapter } from "./register.js";
 
@@ -20,6 +26,7 @@ let httpServer: HttpServer;
 let io: GameServer;
 let store: LobbyStore;
 let adapter: SocketAdapter;
+let content: StubSource;
 let url: string;
 let clock: number;
 const clients: ClientSocket[] = [];
@@ -29,7 +36,8 @@ beforeEach(async () => {
   httpServer = createServer();
   io = new Server(httpServer);
   store = createLobbyStore({ now: () => clock });
-  adapter = registerSocketHandlers(io, store);
+  content = stubSource();
+  adapter = registerSocketHandlers(io, store, content.source);
 
   await new Promise<void>((resolve) => httpServer.listen(0, resolve));
   url = `http://localhost:${(httpServer.address() as AddressInfo).port}`;
@@ -60,6 +68,56 @@ function nextEvent<T>(client: ClientSocket, event: string): Promise<T> {
 }
 
 const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 30));
+
+interface StubSource {
+  source: RoundContentSource;
+  /** Answers whatever round is currently being asked for. */
+  deliver(round: SourcedRound): void;
+  fail(message: string): void;
+}
+
+/**
+ * The content source, under the test's control.
+ *
+ * Nothing here waits three real seconds for a countdown: the store's clock is
+ * pinned to a fixed instant well in the past, so the deadline it stamps on the
+ * round is already behind the runner's real clock and the countdown timer fires
+ * on the next tick. What is being tested is the wiring — who gets told what —
+ * and the timing itself is covered deterministically in the store's own tests.
+ */
+function stubSource(): StubSource {
+  let settleRound: ((round: SourcedRound) => void) | null = null;
+  let failRound: ((error: Error) => void) | null = null;
+
+  return {
+    source: {
+      build: () =>
+        new Promise<SourcedRound>((resolve, reject) => {
+          settleRound = resolve;
+          failRound = reject;
+        }),
+    },
+    deliver: (round) => settleRound?.(round),
+    fail: (message) => failRound?.(new RoundSourceError(message)),
+  };
+}
+
+const A_PICTURE: RoundContent = {
+  kind: "image",
+  question: "Which country's flag is this?",
+  imageUrl: "https://example.test/flag.png",
+};
+
+/** A host and a guest, both in, ready for the host to press start. */
+async function readyToStart() {
+  const { host, created } = await openLobby();
+  const guest = await connect();
+  await emit<JoinLobbyResult>(guest, "lobby:join", {
+    code: created.code,
+    nickname: "kim",
+  });
+  return { host, guest, created };
+}
 
 function unwrap<T>(result: Ack<T>): T {
   if (!result.ok) throw new Error(`expected ok, got ${result.error}: ${result.message}`);
@@ -178,6 +236,55 @@ describe("host powers", () => {
       ok: false,
       error: "LOBBY_NOT_FOUND",
     });
+  });
+});
+
+describe("starting a round", () => {
+  it("puts everybody on a countdown with nothing to look at yet", async () => {
+    const { host, guest } = await readyToStart();
+
+    const seen = [nextEvent<LobbyState>(host, "lobby:state"), nextEvent<LobbyState>(guest, "lobby:state")];
+    expect(await emit(host, "lobby:start")).toMatchObject({ ok: true });
+
+    for (const state of await Promise.all(seen)) {
+      expect(state.status).toBe("countdown");
+      expect(state.round).toMatchObject({ number: 1, content: null, answer: null });
+    }
+  });
+
+  it("shows the same round to everybody when the content lands", async () => {
+    const { host, guest } = await readyToStart();
+    await emit(host, "lobby:start");
+    await settle();
+
+    const seen = [nextEvent<LobbyState>(host, "lobby:state"), nextEvent<LobbyState>(guest, "lobby:state")];
+    content.deliver({
+      content: A_PICTURE,
+      answer: "Bhutan",
+      aliases: ["Kingdom of Bhutan"],
+      subject: "Flag of Bhutan",
+    });
+
+    for (const state of await Promise.all(seen)) {
+      expect(state.status).toBe("in_round");
+      expect(state.round?.content).toEqual(A_PICTURE);
+      // Nobody is told the answer while there is still time to type it.
+      expect(state.round?.answer).toBeNull();
+    }
+  });
+
+  it("sends everybody back to the lobby when the round cannot be built", async () => {
+    const { host, guest } = await readyToStart();
+    await emit(host, "lobby:start");
+    await settle();
+
+    const explained = nextEvent<{ message: string }>(guest, "round:failed");
+    const state = nextEvent<LobbyState>(host, "lobby:state");
+    content.fail("None of the pictures the AI picked would load.");
+
+    expect((await explained).message).toBe("None of the pictures the AI picked would load.");
+    expect((await state).status).toBe("lobby");
+    expect((await state).round).toBeNull();
   });
 });
 

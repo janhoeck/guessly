@@ -19,7 +19,13 @@ function EntryPanel({ className, ...props }: React.ComponentProps<"div">) {
         <CardTitle className="text-lg">Start playing</CardTitle>
       </CardHeader>
       <CardContent>
-        <EntryForm />
+        {/* EntryForm reads `?code=` to prefill the room code, and
+            `useSearchParams` opts its subtree out of static rendering. The
+            boundary is here so that stays true of the form alone — the card,
+            the hero and everything else on the page keep prerendering. */}
+        <React.Suspense fallback={<div className="h-[19.5rem]" />}>
+          <EntryForm />
+        </React.Suspense>
       </CardContent>
     </Card>
   )

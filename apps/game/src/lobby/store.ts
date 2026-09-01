@@ -1,5 +1,6 @@
 import {
   ALL_TOPIC_IDS,
+  COUNTDOWN_DURATION_MS,
   EMPTY_LOBBY_TTL_MS,
   IDLE_LOBBY_TTL_MS,
   LOBBY_DISCONNECT_GRACE_MS,
@@ -10,7 +11,9 @@ import {
   MIN_TOPICS,
   NICKNAME_MAX_LENGTH,
   NICKNAME_MIN_LENGTH,
+  ROUND_DURATION_MS,
   isTopicId,
+  topicById,
   err,
   ok,
   type Ack,
@@ -24,21 +27,52 @@ import {
   type LobbyStatus,
   type ResumeLobbyPayload,
   type ResumeLobbyResult,
+  type RoundContent,
+  type RoundKind,
   type TopicId,
 } from "@guessly/protocol";
 import { generateCode, generatePlayerId, generateToken, tokensMatch } from "./codes.js";
-import { toLobbyState, type LobbyRecord, type PlayerRecord } from "./types.js";
+import {
+  toLobbyState,
+  type LobbyRecord,
+  type PlayerRecord,
+  type RoundRecord,
+} from "./types.js";
 
 /**
  * Everything nondeterministic, injected. The clock is the obvious one, but
  * codes and tokens are the other two — collision retry is untestable without
- * being able to make the generator collide.
+ * being able to make the generator collide. `pickIndex` is the fourth: which
+ * topic a round lands on is a rule worth testing, and `Math.random` is not
+ * something a test can pin down.
  */
 export interface LobbyStoreDeps {
   now: () => number;
   generateCode: () => string;
   generatePlayerId: () => string;
   generateToken: () => string;
+  /** Chooses one of `length` options. Called once per round, for the topic. */
+  pickIndex: (length: number) => number;
+}
+
+/**
+ * What the content source is being asked for when a round opens.
+ *
+ * It is all plain data, on purpose: the store hands one of these out and never
+ * learns how it gets answered, so an AI call, a fixture and a stub are the same
+ * thing as far as the rules are concerned.
+ */
+export interface RoundRequest {
+  code: string;
+  /** 1-based. Every later transition quotes it back, which is what makes a
+   *  slow answer to an abandoned round harmless. */
+  number: number;
+  topic: TopicId;
+  kind: RoundKind;
+  /** Answers this game has already used, so a source can avoid repeating one. */
+  exclude: string[];
+  /** When the countdown reaches zero. The round may not start before it. */
+  startsAt: number;
 }
 
 /** What one sweep tick changed. The caller turns this into socket traffic. */
@@ -55,7 +89,29 @@ export interface LobbyStore {
   resume(payload: ResumeLobbyPayload): Ack<ResumeLobbyResult>;
   setTarget(code: string, playerId: string, targetScore: number): Ack<Record<string, never>>;
   setTopics(code: string, playerId: string, topics: TopicId[]): Ack<Record<string, never>>;
-  start(code: string, playerId: string): Ack<Record<string, never>>;
+  /**
+   * Opens the countdown and draws round one's topic. The ack is what the
+   * content source needs to go and build the round — the caller is expected to
+   * take it away and come back with `deliverRound` or `abandonRound`.
+   */
+  start(code: string, playerId: string): Ack<RoundRequest>;
+  /**
+   * The content arrived: the round goes live and the clock starts. Every
+   * round-scoped call below quotes `number` back and returns null if it no
+   * longer matches, so an answer that arrives after the lobby moved on is
+   * dropped rather than played on top of whatever is happening now.
+   */
+  deliverRound(
+    code: string,
+    number: number,
+    content: RoundContent,
+    answer: string,
+    aliases: string[],
+  ): LobbyState | null;
+  /** The 20 seconds are up: the answer goes on the wire and guessing closes. */
+  revealRound(code: string, number: number): LobbyState | null;
+  /** The content could not be built. The lobby goes back to being a lobby. */
+  abandonRound(code: string, number: number): LobbyState | null;
   /** Intentional exit. Returns the snapshot to broadcast, or null if there is nobody left to tell. */
   leave(code: string, playerId: string): LobbyState | null;
   /** Involuntary drop. The seat is kept; how long depends on the phase. */
@@ -100,6 +156,7 @@ export function createLobbyStore(overrides: Partial<LobbyStoreDeps> = {}): Lobby
     generateCode,
     generatePlayerId,
     generateToken,
+    pickIndex: (length) => Math.floor(Math.random() * length),
     ...overrides,
   };
 
@@ -160,6 +217,36 @@ export function createLobbyStore(overrides: Partial<LobbyStoreDeps> = {}): Lobby
       if (!lobbies.has(code)) return code;
     }
     return null;
+  };
+
+  /**
+   * Draws a topic from the lobby's own selection. The index is clamped rather
+   * than trusted: a picker that returns nonsense should cost the round its
+   * randomness, not take the server down in the middle of a game.
+   */
+  const pickTopic = (lobby: LobbyRecord): TopicId | null => {
+    const { topics } = lobby;
+    if (topics.length === 0) return null;
+    const raw = deps.pickIndex(topics.length);
+    const index = Number.isInteger(raw) ? Math.min(Math.max(raw, 0), topics.length - 1) : 0;
+    return topics[index] ?? null;
+  };
+
+  /**
+   * A round-scoped transition only applies to the round it was issued for and
+   * only from the phase it makes sense in. Everything else is a message about a
+   * round that has already been abandoned, restarted, or finished.
+   */
+  const roundInPhase = (
+    code: string,
+    number: number,
+    status: LobbyStatus,
+  ): { lobby: LobbyRecord; round: RoundRecord } | null => {
+    const lobby = lobbies.get(normalizeCode(code));
+    if (!lobby || lobby.status !== status) return null;
+    const round = lobby.round;
+    if (!round || round.number !== number) return null;
+    return { lobby, round };
   };
 
   const makePlayer = (nickname: string, now: number): PlayerRecord => ({
@@ -235,6 +322,8 @@ export function createLobbyStore(overrides: Partial<LobbyStoreDeps> = {}): Lobby
         hostId: host.id,
         topics: normalizeTopics(topics),
         players: new Map([[host.id, host]]),
+        round: null,
+        usedAnswers: [],
         createdAt: now,
         lastActivityAt: now,
       };
@@ -244,7 +333,7 @@ export function createLobbyStore(overrides: Partial<LobbyStoreDeps> = {}): Lobby
         code,
         playerId: host.id,
         resumeToken: host.resumeToken,
-        state: toLobbyState(lobby),
+        state: toLobbyState(lobby, now),
       });
     },
 
@@ -272,7 +361,11 @@ export function createLobbyStore(overrides: Partial<LobbyStoreDeps> = {}): Lobby
       lobby.players.set(player.id, player);
       lobby.lastActivityAt = now;
 
-      return ok({ playerId: player.id, resumeToken: player.resumeToken, state: toLobbyState(lobby) });
+      return ok({
+        playerId: player.id,
+        resumeToken: player.resumeToken,
+        state: toLobbyState(lobby, now),
+      });
     },
 
     resume({ code, playerId, resumeToken }) {
@@ -292,7 +385,7 @@ export function createLobbyStore(overrides: Partial<LobbyStoreDeps> = {}): Lobby
       lobby.lastActivityAt = now;
       // hostId is deliberately untouched: a returning host does not take it back.
 
-      return ok({ state: toLobbyState(lobby) });
+      return ok({ state: toLobbyState(lobby, now) });
     },
 
     setTarget(code, playerId, targetScore) {
@@ -329,12 +422,88 @@ export function createLobbyStore(overrides: Partial<LobbyStoreDeps> = {}): Lobby
         return err("NOT_ENOUGH_PLAYERS", `You need ${MIN_PLAYERS_TO_START} players to start.`);
       }
 
-      // The seam the round engine plugs into. Until it exists the lobby simply
-      // moves into `in_round` with no round attached, which is what closes the
-      // door on late joiners and freezes the target score.
-      host.lobby.status = "in_round";
-      host.lobby.lastActivityAt = deps.now();
-      return ok({});
+      const topic = pickTopic(host.lobby);
+      if (topic === null) {
+        return err("INVALID_TOPICS", "This lobby has no topics to play.");
+      }
+
+      const now = deps.now();
+      // The countdown starts now and the content is fetched against it, so the
+      // wait for the round is spent watching a number fall rather than a
+      // spinner turn. `in_round` is not reached until there is something to
+      // look at — see deliverRound.
+      const round: RoundRecord = {
+        number: 1,
+        topic,
+        kind: topicById(topic).kind,
+        startsAt: now + COUNTDOWN_DURATION_MS,
+        endsAt: null,
+        content: null,
+        answer: null,
+        aliases: [],
+        revealed: false,
+      };
+
+      host.lobby.status = "countdown";
+      host.lobby.round = round;
+      host.lobby.lastActivityAt = now;
+
+      return ok({
+        code: host.lobby.code,
+        number: round.number,
+        topic: round.topic,
+        kind: round.kind,
+        exclude: [...host.lobby.usedAnswers],
+        startsAt: round.startsAt,
+      });
+    },
+
+    deliverRound(code, number, content, answer, aliases) {
+      const found = roundInPhase(code, number, "countdown");
+      if (!found) return null;
+      const { lobby, round } = found;
+
+      const now = deps.now();
+      // The countdown is a floor rather than a target. Content that turns up
+      // early waits for it; content that turns up late starts the clock from
+      // here, because handing somebody a round that is already half over is
+      // worse than the extra second or two of waiting.
+      const startsAt = Math.max(round.startsAt, now);
+
+      round.content = content;
+      round.answer = answer;
+      round.aliases = aliases;
+      round.startsAt = startsAt;
+      round.endsAt = startsAt + ROUND_DURATION_MS;
+      lobby.status = "in_round";
+      lobby.lastActivityAt = now;
+      return toLobbyState(lobby, now);
+    },
+
+    revealRound(code, number) {
+      const found = roundInPhase(code, number, "in_round");
+      if (!found) return null;
+      const { lobby, round } = found;
+
+      const now = deps.now();
+      round.revealed = true;
+      lobby.status = "intermission";
+      lobby.lastActivityAt = now;
+      // Remembered so the next round does not serve the same thing again.
+      if (round.answer !== null) lobby.usedAnswers.push(round.answer);
+      return toLobbyState(lobby, now);
+    },
+
+    abandonRound(code, number) {
+      const found = roundInPhase(code, number, "countdown");
+      if (!found) return null;
+      const { lobby } = found;
+
+      const now = deps.now();
+      lobby.round = null;
+      lobby.status = "lobby";
+      lobby.lastActivityAt = now;
+      return toLobbyState(lobby, now);
     },
 
     leave(code, playerId) {
@@ -349,9 +518,10 @@ export function createLobbyStore(overrides: Partial<LobbyStoreDeps> = {}): Lobby
         return null;
       }
 
-      lobby.lastActivityAt = deps.now();
+      const now = deps.now();
+      lobby.lastActivityAt = now;
       if (lobby.hostId === playerId) promoteHost(lobby);
-      return toLobbyState(lobby);
+      return toLobbyState(lobby, now);
     },
 
     disconnect(code, playerId) {
@@ -365,7 +535,7 @@ export function createLobbyStore(overrides: Partial<LobbyStoreDeps> = {}): Lobby
       player.disconnectedAt = now;
       lobby.lastActivityAt = now;
       if (lobby.hostId === playerId) promoteHost(lobby);
-      return toLobbyState(lobby);
+      return toLobbyState(lobby, now);
     },
 
     sweep() {
@@ -417,7 +587,7 @@ export function createLobbyStore(overrides: Partial<LobbyStoreDeps> = {}): Lobby
           continue;
         }
 
-        if (mutated) changed.push(toLobbyState(lobby));
+        if (mutated) changed.push(toLobbyState(lobby, now));
       }
 
       return { changed, closed };
@@ -425,7 +595,7 @@ export function createLobbyStore(overrides: Partial<LobbyStoreDeps> = {}): Lobby
 
     snapshot(code) {
       const lobby = lobbies.get(normalizeCode(code));
-      return lobby ? toLobbyState(lobby) : null;
+      return lobby ? toLobbyState(lobby, deps.now()) : null;
     },
 
     size() {

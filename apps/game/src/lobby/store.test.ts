@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  COUNTDOWN_DURATION_MS,
   EMPTY_LOBBY_TTL_MS,
   IDLE_LOBBY_TTL_MS,
   LOBBY_DISCONNECT_GRACE_MS,
@@ -7,9 +8,11 @@ import {
   ALL_TOPIC_IDS,
   MAX_TARGET_SCORE,
   MIN_TARGET_SCORE,
+  ROUND_DURATION_MS,
   type Ack,
   type CreateLobbyPayload,
   type ErrorCode,
+  type RoundContent,
   type TopicId,
 } from "@guessly/protocol";
 import { createLobbyStore } from "./store.js";
@@ -23,12 +26,15 @@ function testStore(...queuedCodes: string[]) {
   let codeCount = 0;
   let idCount = 0;
   let tokenCount = 0;
+  /** Which topic a round draws. Zero is the first of the lobby's own selection. */
+  let pick = 0;
 
   const store = createLobbyStore({
     now: () => now,
     generateCode: () => codes.shift() ?? `CODE${(codeCount += 1)}`,
     generatePlayerId: () => `player-${(idCount += 1)}`,
     generateToken: () => `token-${(tokenCount += 1)}`,
+    pickIndex: () => pick,
   });
 
   return {
@@ -37,8 +43,18 @@ function testStore(...queuedCodes: string[]) {
       now += ms;
     },
     queueCodes: (...more: string[]) => codes.push(...more),
+    pickTopicAt: (index: number) => {
+      pick = index;
+    },
   };
 }
+
+/** Stand-in for whatever the content source came back with. */
+const A_PICTURE: RoundContent = {
+  kind: "image",
+  question: "Which country's flag is this?",
+  imageUrl: "https://example.test/flag.png",
+};
 
 /**
  * A valid create payload with only the field under test varied, so a new
@@ -305,10 +321,49 @@ describe("setTopics", () => {
 });
 
 describe("start", () => {
-  it("moves the lobby into a round", () => {
+  it("opens a countdown rather than a round, with nothing to look at yet", () => {
     const { store, code, host } = lobbyOf(2);
     unwrap(store.start(code, host.playerId));
-    expect(store.snapshot(code)?.status).toBe("in_round");
+
+    const state = store.snapshot(code);
+    expect(state?.status).toBe("countdown");
+    expect(state?.round).toMatchObject({
+      number: 1,
+      startsAt: NOON + COUNTDOWN_DURATION_MS,
+      endsAt: null,
+      content: null,
+      answer: null,
+    });
+  });
+
+  it("hands back what the content source needs, drawn from the lobby's own topics", () => {
+    const { store, code, host, pickTopicAt } = lobbyOf(2);
+    unwrap(store.setTopics(code, host.playerId, ["music", "flags"]));
+    // Catalogue order, not click order: flags comes first.
+    pickTopicAt(1);
+
+    const request = unwrap(store.start(code, host.playerId));
+    expect(request).toEqual({
+      code,
+      number: 1,
+      topic: "music",
+      kind: "lyrics",
+      exclude: [],
+      startsAt: NOON + COUNTDOWN_DURATION_MS,
+    });
+  });
+
+  it("clamps a picker that returns nonsense rather than falling over", () => {
+    const { store, code, host, pickTopicAt } = lobbyOf(2);
+    unwrap(store.setTopics(code, host.playerId, ["flags"]));
+    pickTopicAt(99);
+    expect(unwrap(store.start(code, host.playerId)).topic).toBe("flags");
+  });
+
+  it("shuts the door on late joiners", () => {
+    const { store, code, host } = lobbyOf(2);
+    unwrap(store.start(code, host.playerId));
+    expect(failure(store.join({ code, nickname: "latecomer" }))).toBe("GAME_IN_PROGRESS");
   });
 
   it("refuses anybody but the host", () => {
@@ -333,6 +388,94 @@ describe("start", () => {
     expect(failure(store.start(code, host.playerId))).toBe("GAME_IN_PROGRESS");
   });
 });
+
+/** A lobby of two with the countdown already running. */
+function counting(down = 0) {
+  const harness = lobbyOf(2);
+  const request = unwrap(harness.store.start(harness.code, harness.host.playerId));
+  harness.advance(down);
+  return { ...harness, request };
+}
+
+describe("rounds", () => {
+  it("starts the clock when the content lands, and withholds the answer", () => {
+    const { store, code, request, advance } = counting();
+    advance(COUNTDOWN_DURATION_MS);
+
+    const state = store.deliverRound(code, request.number, A_PICTURE, "Bhutan", ["Kingdom of Bhutan"]);
+    expect(state?.status).toBe("in_round");
+    expect(state?.round?.content).toEqual(A_PICTURE);
+    expect(state?.round?.endsAt).toBe(NOON + COUNTDOWN_DURATION_MS + ROUND_DURATION_MS);
+    // The whole point of the projection: everybody gets this snapshot.
+    expect(state?.round?.answer).toBeNull();
+  });
+
+  it("makes content that arrives early wait for the countdown", () => {
+    const { store, code, request } = counting();
+    const state = store.deliverRound(code, request.number, A_PICTURE, "Bhutan", []);
+    expect(state?.round?.startsAt).toBe(NOON + COUNTDOWN_DURATION_MS);
+  });
+
+  it("gives a late round its full twenty seconds anyway", () => {
+    const { store, code, request, advance } = counting();
+    advance(11_000);
+    const state = store.deliverRound(code, request.number, A_PICTURE, "Bhutan", []);
+    expect(state?.round?.startsAt).toBe(NOON + 11_000);
+    expect(state?.round?.endsAt).toBe(NOON + 11_000 + ROUND_DURATION_MS);
+  });
+
+  it("reveals the answer only once the round is over", () => {
+    const { store, code, request } = counting(COUNTDOWN_DURATION_MS);
+    store.deliverRound(code, request.number, A_PICTURE, "Bhutan", ["Kingdom of Bhutan"]);
+
+    const state = store.revealRound(code, request.number);
+    expect(state?.status).toBe("intermission");
+    expect(state?.round?.answer).toBe("Bhutan");
+  });
+
+  it("puts the lobby back when the content cannot be built, ready to try again", () => {
+    const { store, code, host, request } = counting();
+    const state = store.abandonRound(code, request.number);
+    expect(state?.status).toBe("lobby");
+    expect(state?.round).toBeNull();
+    expect(store.start(code, host.playerId).ok).toBe(true);
+  });
+
+  it("ignores content for a round that has already been abandoned", () => {
+    const { store, code, request } = counting();
+    store.abandonRound(code, request.number);
+    expect(store.deliverRound(code, request.number, A_PICTURE, "Bhutan", [])).toBeNull();
+    expect(store.snapshot(code)?.status).toBe("lobby");
+  });
+
+  it("ignores a transition quoting the wrong round number", () => {
+    const { store, code, request } = counting(COUNTDOWN_DURATION_MS);
+    expect(store.deliverRound(code, request.number + 1, A_PICTURE, "Bhutan", [])).toBeNull();
+    store.deliverRound(code, request.number, A_PICTURE, "Bhutan", []);
+    expect(store.revealRound(code, request.number + 1)).toBeNull();
+    expect(store.snapshot(code)?.round?.answer).toBeNull();
+  });
+
+  it("refuses to abandon a round that is already being played", () => {
+    const { store, code, request } = counting(COUNTDOWN_DURATION_MS);
+    store.deliverRound(code, request.number, A_PICTURE, "Bhutan", []);
+    expect(store.abandonRound(code, request.number)).toBeNull();
+    expect(store.snapshot(code)?.status).toBe("in_round");
+  });
+
+  it("holds a dropped player's seat for the whole game, not sixty seconds", () => {
+    const { store, code, request, joiners, advance } = counting(COUNTDOWN_DURATION_MS);
+    store.deliverRound(code, request.number, A_PICTURE, "Bhutan", []);
+    store.disconnect(code, joiners[0]!.playerId);
+
+    advance(LOBBY_DISCONNECT_GRACE_MS * 2);
+    store.sweep();
+
+    // Greyed out, but still there and still holding their score.
+    expect(store.snapshot(code)?.players).toHaveLength(2);
+  });
+});
+
 
 describe("leave", () => {
   it("frees the seat immediately", () => {

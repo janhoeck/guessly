@@ -52,7 +52,7 @@ export const SUBMIT_ROUND_INPUT_SCHEMA = {
       type: "array",
       items: { type: "string" },
       description:
-        "Image rounds only. Up to five direct https URLs to an image file, best first, on hosts that serve files to anyone. Empty array on a lyrics round.",
+        "Image rounds only. Three to five direct https URLs to an image file, best first, each one seen in a search result rather than written from memory, on hosts that serve files to anyone. Empty array on a lyrics round.",
     },
     lyrics_snippet: {
       type: "string",
@@ -213,9 +213,17 @@ export function parseSubmission(input: unknown, kind: RoundKind): ParsedSubmissi
     return { ok: true, kind: "lyrics", snippet, ...common };
   }
 
-  const imageUrls = cleanImageUrls(asStringArray(input.image_urls));
+  // Submitting nothing and submitting five unusable things are different
+  // mistakes, and the reason is fed back to the model on the retry — so they
+  // are told apart here rather than flattened into one unhelpful sentence.
+  const rawUrls = asStringArray(input.image_urls);
+  const imageUrls = cleanImageUrls(rawUrls);
   if (imageUrls.length === 0) {
-    return reject("no usable https image URL was returned.");
+    return reject(
+      rawUrls.length === 0
+        ? "you submitted an image round with no image URLs at all. Search for the picture, then submit the URLs you saw."
+        : `none of the ${rawUrls.length} URLs you gave could be an image: they have to be https and point straight at an image file.`,
+    );
   }
   return { ok: true, kind: "image", imageUrls, ...common };
 }

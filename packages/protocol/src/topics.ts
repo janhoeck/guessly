@@ -20,22 +20,29 @@ export interface TopicDefinition {
   id: string;
   label: string;
   kind: RoundKind;
-  /** One line, shown beside the label wherever there is room for it. */
+  /**
+   * One line, shown beside the label wherever there is room for it — and read
+   * by the content generator, which quotes it into the prompt as the
+   * description of the topic. So it is copy with a second reader: a hint that
+   * names something the open archives do not photograph is an instruction to
+   * go and fail. "Memes" alone used to sit here, and the model dutifully went
+   * looking for meme images, which are stock photos on hosts that block us.
+   */
   hint: string;
 }
 
 export const TOPICS = [
   { id: "flags", label: "Flags", kind: "image", hint: "Countries and territories" },
   { id: "logos", label: "Logos & brands", kind: "image", hint: "Marks with the name cropped out" },
-  { id: "movies", label: "Movies", kind: "image", hint: "Stills, posters and scenes" },
-  { id: "games", label: "Video games", kind: "image", hint: "Screenshots, key art, characters" },
+  { id: "movies", label: "Movies", kind: "image", hint: "Props, places and faces from the films" },
+  { id: "games", label: "Video games", kind: "image", hint: "Characters, statues and cosplay" },
   { id: "landmarks", label: "Landmarks", kind: "image", hint: "Buildings, cities, natural wonders" },
   { id: "animals", label: "Animals", kind: "image", hint: "Species, common and obscure" },
   { id: "food", label: "Food & drink", kind: "image", hint: "Dishes from everywhere" },
   { id: "sports", label: "Sports", kind: "image", hint: "Kit, venues, moments" },
   { id: "technology", label: "Technology", kind: "image", hint: "Hardware, interfaces, gadgets" },
   { id: "art", label: "Art", kind: "image", hint: "Paintings, sculpture, photography" },
-  { id: "mainstream", label: "Pop culture", kind: "image", hint: "Memes, TV, whatever is everywhere" },
+  { id: "mainstream", label: "Pop culture", kind: "image", hint: "Memes, TV, the faces behind them" },
   { id: "music", label: "Music", kind: "lyrics", hint: "A snippet of lyrics — name the song" },
 ] as const satisfies readonly TopicDefinition[];
 

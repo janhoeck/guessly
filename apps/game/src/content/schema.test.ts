@@ -63,6 +63,18 @@ describe("image rounds", () => {
       "image",
     );
     expect(parsed).toMatchObject({ ok: false });
+    // The retry is only as good as the reason it is given: unusable URLs and
+    // none at all are different mistakes to have made. The count is of what
+    // was actually a string — the empty one and the number never were.
+    expect(parsed).toMatchObject({ reason: expect.stringContaining("2 URLs") });
+  });
+
+  it("says so when an image round came back with no URLs at all", () => {
+    const parsed = parseSubmission(imageSubmission({ image_urls: [] }), "image");
+    expect(parsed).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining("no image URLs at all"),
+    });
   });
 
   it("keeps at most five", () => {

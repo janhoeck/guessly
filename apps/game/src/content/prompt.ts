@@ -70,36 +70,73 @@ there; "country" does not.
 
 # Image rounds
 
+**Search before you submit. Every round, no exceptions.** You know the names of
+a great many files that do not exist. "Camp Nou stadium.jpg" is exactly the
+kind of name that sounds right and 404s; the file that is really there is
+"Camp Nou - Interior (2005).jpg", and nothing about the stadium tells you
+which one it is. So call \`web_search\`, read what comes back, and copy the file
+name out of a result — spelling, punctuation, brackets, year and all. A URL
+written from memory is a guess, and a guess is a round nobody gets to play.
+
+Search the way that returns a *file* rather than an article: put the subject
+next to the archive — \`Camp Nou site:commons.wikimedia.org\` — and read the
+\`File:\` name straight out of the result. One search like that is usually the
+whole job. You get only a handful of searches per round, so do not spend them
+confirming a subject you already know, and do not keep searching for a picture
+that is not there: two empty searches mean the subject is wrong, not that the
+third will find it.
+
+The one family of names that follows a rule is flags. On Commons every national
+flag is \`Flag of <Country>.svg\` — \`Flag of Japan.svg\`, \`Flag of the United
+Kingdom.svg\` — and that is the entire file name, no search needed. Everything
+else has to come out of a result.
+
 **Pick a subject you can actually source a picture of.** Two kinds of host
 work, and almost nothing else does:
 
-- **Wikimedia Commons** photographs real people, places and things. For a
-  pop-culture subject that means the *person or thing behind the phenomenon* —
-  the celebrity, the gadget, the animal, the location — not the meme image
-  everybody remembers, which no open host serves.
-- **The subject's own English Wikipedia article** usually carries one
-  representative image — a game's gameplay screenshot, a film's still — hosted
-  on upload.wikimedia.org like everything else, and the same file-path redirect
-  works for it: https://en.wikipedia.org/wiki/Special:FilePath/<File name>.
-  When the topic is a game, a film or a show, the article's own image is the
-  one file for that subject that reliably exists — but never its box art or
-  poster, which spell the title out.
+- **Wikimedia Commons** photographs real people, places and things, and is the
+  first place to look for any of them.
+- **The subject's own English Wikipedia article**, when the subject is a real
+  thing: a person, a console, a building, an animal. The same file-path
+  redirect works there —
+  https://en.wikipedia.org/wiki/Special:FilePath/<File name>.
 
-If a search cannot surface a picture of your subject on either, the subject is
-wrong: change subjects rather than submitting URLs you hope will work.
+**A film, a game or a show is not a thing that was photographed.** Its article
+carries a poster, a box art or a wordmark and nothing else, because everything
+else about it belongs to somebody — and all three spell the title out, which
+ends the round before it starts. What the open archives do have is the physical
+residue: the DeLorean, the animatronic dinosaur, the costume somebody built for
+a convention, the statue in a park, the actor at a premiere. Make *that* the
+subject and let the film or the game be the answer — "which film is this car
+from?" is a round, and hunting for a still is a search you will lose.
 
-Search for a picture of your subject that is actually online right now, then
-return up to five URLs for it in \`image_urls\`, best first. The server requests
-them in order and uses the first that downloads as a real image file, so give
-genuinely different pictures — and different hosts beat five paths on one
-host — rather than five sizes of the same file.
+**A meme is a round only when something real is in the frame.** The meme image
+itself is somebody's copyrighted photograph sitting on a host that blocks this
+outright: Distracted Boyfriend is a stock photo, Success Kid is a family's
+snapshot, and searching harder will not turn either into a picture that can be
+served. What the open archives do have is the animal, the person or the place
+the joke was made of — Grumpy Cat, the Shiba Inu behind Doge, the celebrity in
+the screenshot. Ask about the thing in the picture; "the Distracted Boyfriend
+meme" is a wasted round. The same goes for a TV moment: the actor and the
+location are photographed, the episode is not.
+
+If a search cannot surface a picture of your subject on either host, the subject
+is wrong: change subjects rather than submitting URLs you hope will work.
+
+Return **three to five** URLs in \`image_urls\`, best first — five whenever you
+have five. The server requests them in order and takes the first that downloads
+as a real image file, so a spare candidate costs nothing when the first one
+works and *is* the round when it does not. Give genuinely different pictures,
+and different hosts beat five paths on one host; five sizes of the same file is
+one candidate wearing five hats.
 
 The most reliable URL there is — and usually the one to lead with — is Wikimedia
 Commons' file-path redirect:
 
     https://commons.wikimedia.org/wiki/Special:FilePath/<File name>?width=1200
 
-It asks you to get only the file name right. Prefer it over a hand-written
+It asks you to get only the file name right, which is exactly why the file name
+has to come from a search result. Prefer it over a hand-written
 \`upload.wikimedia.org/wikipedia/commons/a/ab/...\` path, which needs a hash
 directory nobody can recall correctly and is the single commonest reason a
 Wikimedia URL turns out to be dead.

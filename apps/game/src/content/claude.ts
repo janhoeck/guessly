@@ -47,8 +47,14 @@ const MAX_TOKENS = 16_000;
  */
 const EFFORT = "low" as const;
 
-/** Enough to search, look at what came back, and search once more. */
-const MAX_SEARCHES = 4;
+/**
+ * Enough to find a file name, and enough to be wrong twice on the way. Four
+ * was enough while the model was allowed to write URLs from memory; now that
+ * the prompt insists every file name comes out of a search result, a topic
+ * whose first two searches return articles rather than files used to run out of
+ * budget and submit nothing at all.
+ */
+const MAX_SEARCHES = 6;
 
 /** One turn to answer, one to resume a paused search, one after a nudge. */
 const MAX_TURNS = 3;
@@ -240,12 +246,18 @@ export function createClaudeRoundGenerator(
           return { kind: "image", image, ...found } satisfies GeneratedRound;
         }
 
+        // The URLs themselves, not just how many: a dead candidate is almost
+        // always a file name that does not exist, and the name is the only
+        // thing that says whether the model searched or guessed.
         console.warn(
-          `[content] ${request.topic} attempt ${attempt}/${attempts}: none of ${parsed.imageUrls.length} URLs for "${parsed.subject}" downloaded`,
+          `[content] ${request.topic} attempt ${attempt}/${attempts}: none of ${parsed.imageUrls.length} URLs for "${parsed.subject}" downloaded — ${parsed.imageUrls.join(" ")}`,
         );
         // Each attempt is a fresh conversation, so the model does not remember
         // what it tried — the note has to say whose pictures failed.
-        retryNote = `none of the image URLs you gave for "${parsed.subject}" could be downloaded — they were unreachable, or did not serve an actual image file. Pick a different subject that has a picture on Wikimedia Commons.`;
+        // What failed is usually the *file name*, not the subject — the same
+        // subject downloads on another attempt — so the note says so rather
+        // than sending a perfectly good subject away.
+        retryNote = `none of the image URLs you gave for "${parsed.subject}" could be downloaded — they were unreachable, or did not serve an actual image file. Most likely the file names were written from memory and do not exist. Search for the picture and copy the URLs out of the results, or pick a different subject.`;
         playerMessage = "None of the pictures the AI picked would load.";
       }
 

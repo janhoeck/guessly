@@ -114,6 +114,7 @@ function GameRoom({ code }: { code: string }) {
               round={state.round}
               players={state.players}
               playerId={playerId}
+              language={state.language}
               targetScore={state.targetScore}
               onGuess={guess}
             />

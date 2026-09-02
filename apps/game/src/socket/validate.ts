@@ -1,5 +1,6 @@
 import {
   err,
+  isLanguageId,
   isTopicId,
   ok,
   type Ack,
@@ -7,6 +8,7 @@ import {
   type GuessPayload,
   type JoinLobbyPayload,
   type ResumeLobbyPayload,
+  type SetLanguagePayload,
   type SetTargetPayload,
   type SetTopicsPayload,
   type TopicId,
@@ -36,11 +38,12 @@ const isTopicIdArray = (value: unknown): value is TopicId[] =>
 
 export function parseCreate(raw: unknown): Ack<CreateLobbyPayload> {
   const payload = isRecord(raw) ? raw : {};
-  const { nickname, targetScore, topics } = payload;
+  const { nickname, targetScore, topics, language } = payload;
   if (typeof nickname !== "string") return err("INVALID_NICKNAME", "A nickname is required.");
   if (typeof targetScore !== "number") return err("INVALID_TARGET_SCORE", "A target score is required.");
   if (!isTopicIdArray(topics)) return err("INVALID_TOPICS", "A list of topics is required.");
-  return ok({ nickname, targetScore, topics });
+  if (!isLanguageId(language)) return err("INVALID_LANGUAGE", "A language is required.");
+  return ok({ nickname, targetScore, topics, language });
 }
 
 export function parseJoin(raw: unknown): Ack<JoinLobbyPayload> {
@@ -87,4 +90,12 @@ export function parseSetTopics(raw: unknown): Ack<SetTopicsPayload> {
   const { topics } = payload;
   if (!isTopicIdArray(topics)) return err("INVALID_TOPICS", "A list of topics is required.");
   return ok({ topics });
+}
+
+/** A `LanguageId` is a closed union too, so membership is the whole check. */
+export function parseSetLanguage(raw: unknown): Ack<SetLanguagePayload> {
+  const payload = isRecord(raw) ? raw : {};
+  const { language } = payload;
+  if (!isLanguageId(language)) return err("INVALID_LANGUAGE", "A language is required.");
+  return ok({ language });
 }

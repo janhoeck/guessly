@@ -5,6 +5,8 @@ import { io as connectClient, type Socket as ClientSocket } from "socket.io-clie
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   ALL_TOPIC_IDS,
+  DEFAULT_LANGUAGE,
+  DESERTED_GAME_GRACE_MS,
   IDLE_LOBBY_TTL_MS,
   INTERMISSION_DURATION_MS,
   RATE_LIMIT_EVENTS_PER_SEC,
@@ -154,6 +156,7 @@ async function openLobby() {
       nickname: "host",
       targetScore: 100,
       topics: [...ALL_TOPIC_IDS],
+      language: DEFAULT_LANGUAGE,
     }),
   );
   return { host, created };
@@ -167,6 +170,7 @@ describe("creating and joining", () => {
     expect(created.resumeToken).toHaveLength(64);
     expect(created.state.hostId).toBe(created.playerId);
     expect(created.state.topics).toEqual([...ALL_TOPIC_IDS]);
+    expect(created.state.language).toBe("en");
   });
 
   it("pushes the new snapshot to everybody already in the lobby", async () => {
@@ -199,11 +203,25 @@ describe("creating and joining", () => {
         nickname: "kim",
         targetScore: 100,
         topics: ["not-a-topic"],
+        language: "en",
       }),
     ).toMatchObject({ ok: false, error: "INVALID_TOPICS" });
     expect(
-      await emit(guest, "lobby:create", { nickname: "kim", targetScore: 100, topics: "flags" }),
+      await emit(guest, "lobby:create", {
+        nickname: "kim",
+        targetScore: 100,
+        topics: "flags",
+        language: "en",
+      }),
     ).toMatchObject({ ok: false, error: "INVALID_TOPICS" });
+    expect(
+      await emit(guest, "lobby:create", {
+        nickname: "kim",
+        targetScore: 100,
+        topics: [...ALL_TOPIC_IDS],
+        language: "elvish",
+      }),
+    ).toMatchObject({ ok: false, error: "INVALID_LANGUAGE" });
     expect(await emit(guest, "lobby:create", { nickname: "kim", targetScore: "lots" })).toMatchObject(
       { ok: false, error: "INVALID_TARGET_SCORE" },
     );
@@ -231,6 +249,37 @@ describe("host powers", () => {
       ok: true,
     });
     expect((await broadcast).topics).toEqual(["flags", "music"]);
+  });
+
+  it("broadcasts a new language", async () => {
+    const { host, created } = await openLobby();
+    const guest = await connect();
+    await emit(guest, "lobby:join", { code: created.code, nickname: "kim" });
+
+    const broadcast = nextEvent<LobbyState>(guest, "lobby:state");
+    expect(await emit(host, "lobby:setLanguage", { language: "de" })).toMatchObject({
+      ok: true,
+    });
+    expect((await broadcast).language).toBe("de");
+  });
+
+  it("refuses a language that is not on the list", async () => {
+    const { host } = await openLobby();
+    expect(await emit(host, "lobby:setLanguage", { language: "elvish" })).toMatchObject({
+      ok: false,
+      error: "INVALID_LANGUAGE",
+    });
+  });
+
+  it("refuses a guest who tries to re-pick the language", async () => {
+    const { created } = await openLobby();
+    const guest = await connect();
+    await emit(guest, "lobby:join", { code: created.code, nickname: "kim" });
+
+    expect(await emit(guest, "lobby:setLanguage", { language: "de" })).toMatchObject({
+      ok: false,
+      error: "NOT_HOST",
+    });
   });
 
   it("refuses a guest who tries to re-pick the topics", async () => {
@@ -637,6 +686,57 @@ describe("leaving", () => {
     const broadcast = nextEvent<LobbyState>(host, "lobby:state");
     expect(await emit(guest, "lobby:leave")).toMatchObject({ ok: true });
     expect((await broadcast).players).toHaveLength(1);
+  });
+
+  it("ends the game when the departure leaves one player behind", async () => {
+    const { host, guest } = await playing();
+
+    const over = stateWhere(host, (state) => state.status === "finished");
+    expect(await emit(guest, "lobby:leave")).toMatchObject({ ok: true });
+
+    const state = await over;
+    expect(state.players).toHaveLength(1);
+    expect(state.round).toBeNull();
+
+    // And the round two the runner had already gone off to fetch is dropped
+    // rather than delivered on top of a game that is over.
+    content.deliver({
+      content: A_PICTURE,
+      answer: "Nepal",
+      aliases: [],
+      subject: "Flag of Nepal",
+    });
+    await settle();
+    expect(store.snapshot(state.code)?.status).toBe("finished");
+  });
+
+  it("calls the game off when a drop leaves nobody to play it", async () => {
+    const { host, guest } = await playing();
+
+    // Wound back, so the thirty-second deadline the store is about to stamp is
+    // thirty milliseconds away. How long the grace actually is belongs to the
+    // store's own tests; what is under test here is that a closed tab reaches
+    // it at all.
+    clock = Date.now() - DESERTED_GAME_GRACE_MS + 30;
+
+    const warned = stateWhere(host, (state) => state.desertedEndsAt !== null);
+    const over = stateWhere(host, (state) => state.status === "finished");
+    // Not `lobby:leave`: closing the tab is the common way somebody walks out
+    // of a game, and the way that used to leave the last player watching
+    // countdowns on their own.
+    guest.disconnect();
+
+    // The room is told it is counting down before it is told it is over —
+    // which is the half a player can actually do something about.
+    expect((await warned).status).toBe("in_round");
+
+    const state = await over;
+    expect(state.desertedEndsAt).toBeNull();
+    expect(state.round).toBeNull();
+    // The seat is still on the board, greyed out and holding its score. It is
+    // the game that ended, not the player who was dropped from it.
+    expect(state.players).toHaveLength(2);
+    expect(state.players[1]).toMatchObject({ connected: false });
   });
 
   it("does not then report the same player as disconnected", async () => {

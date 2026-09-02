@@ -1,6 +1,12 @@
 "use client"
 
-import { topicById, type Player, type RoundState } from "@guessly/protocol"
+import {
+  languageById,
+  topicById,
+  type LanguageId,
+  type Player,
+  type RoundState,
+} from "@guessly/protocol"
 
 import { GuessForm } from "@/components/game/guess-form"
 import { RoundImage } from "@/components/game/round-image"
@@ -22,12 +28,14 @@ function RoundStage({
   round,
   players,
   playerId,
+  language,
   targetScore,
   onGuess,
 }: {
   round: RoundState
   players: Player[]
   playerId: string
+  language: LanguageId
   targetScore: number
   onGuess: (
     roundNumber: number,
@@ -36,6 +44,10 @@ function RoundStage({
   ) => void
 }) {
   const topic = topicById(round.topic)
+  // Everything the content source wrote is in the lobby's language, and only
+  // that: the chrome around it stays English. Marking it is what stops a
+  // screen reader pronouncing "Schloss Neuschwanstein" with an English voice.
+  const tag = languageById(language).tag
   const { content } = round
   const revealed = round.answer !== null
   const mine = round.results.find((result) => result.playerId === playerId) ?? null
@@ -56,7 +68,10 @@ function RoundStage({
       </div>
 
       {content && (
-        <h1 className="font-heading text-2xl font-semibold text-balance sm:text-3xl">
+        <h1
+          lang={tag}
+          className="font-heading text-2xl font-semibold text-balance sm:text-3xl"
+        >
           {content.question}
         </h1>
       )}
@@ -75,7 +90,15 @@ function RoundStage({
         {content?.kind === "lyrics" && (
           <div className="absolute inset-0 grid place-items-center p-6">
             <blockquote className="max-w-xl text-center">
-              <p className="font-heading text-xl leading-relaxed whitespace-pre-line text-balance sm:text-2xl">
+              {/* The song's language, not the lobby's — an English song reads
+                  English in a German room, because half of what makes a lyric
+                  recognisable is the language it is in. Undefined rather than
+                  guessed when the source did not say: marking it wrongly is
+                  worse for a screen reader than not marking it. */}
+              <p
+                lang={content.snippetLanguage ?? undefined}
+                className="font-heading text-xl leading-relaxed whitespace-pre-line text-balance sm:text-2xl"
+              >
                 {content.snippet}
               </p>
               {/* Said out loud rather than quietly assumed: these are not the
@@ -106,6 +129,7 @@ function RoundStage({
       {revealed && (
         <Reveal
           answer={round.answer ?? ""}
+          answerLang={tag}
           scored={round.results.length}
           players={players}
           targetScore={targetScore}
@@ -125,12 +149,14 @@ function RoundStage({
  */
 function Reveal({
   answer,
+  answerLang,
   scored,
   players,
   targetScore,
   opensAt,
 }: {
   answer: string
+  answerLang: string
   scored: number
   players: Player[]
   targetScore: number
@@ -146,7 +172,9 @@ function Reveal({
         <span className="text-xs tracking-[0.2em] text-muted-foreground uppercase">
           The answer
         </span>
-        <strong className="font-heading text-2xl font-bold">{answer}</strong>
+        <strong lang={answerLang} className="font-heading text-2xl font-bold">
+          {answer}
+        </strong>
       </div>
 
       <p className="text-xs text-muted-foreground" aria-live="polite">

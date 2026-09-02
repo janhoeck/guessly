@@ -70,6 +70,18 @@ export const COUNTDOWN_DURATION_MS = 3_000;
 /** Before the game starts, a dropped player loses their seat this fast. */
 export const LOBBY_DISCONNECT_GRACE_MS = 60_000;
 
+/**
+ * How long a running game waits for a room that has emptied out below
+ * `MIN_PLAYERS_TO_START` before calling itself off.
+ *
+ * It is a grace rather than an instant end because the server cannot tell a
+ * closed tab from a tunnel: a phone that locks for ten seconds must not be what
+ * ends a game, and a browser refresh is back inside a few. It is much shorter
+ * than the pre-game grace above because the cost is paid by somebody sitting
+ * there watching a countdown on their own.
+ */
+export const DESERTED_GAME_GRACE_MS = 30_000;
+
 /** How often the reaping sweep runs, and what it reaps. */
 export const SWEEP_INTERVAL_MS = 60_000;
 export const EMPTY_LOBBY_TTL_MS = 5 * 60_000;

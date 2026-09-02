@@ -1,4 +1,5 @@
 import type { Ack } from "./errors.js";
+import type { LanguageId } from "./languages.js";
 import type { LobbyState } from "./lobby.js";
 import type { TopicId } from "./topics.js";
 
@@ -11,6 +12,12 @@ export interface CreateLobbyPayload {
    * both go through the same validation.
    */
   topics: TopicId[];
+  /**
+   * What language to write the rounds in. Sent rather than defaulted
+   * server-side for the same reason as the topics above: one validation path,
+   * whether the client asked up front or offers it in the lobby.
+   */
+  language: LanguageId;
 }
 
 export interface CreateLobbyResult {
@@ -52,6 +59,10 @@ export interface SetTargetPayload {
 
 export interface SetTopicsPayload {
   topics: TopicId[];
+}
+
+export interface SetLanguagePayload {
+  language: LanguageId;
 }
 
 export interface GuessPayload {
@@ -128,6 +139,16 @@ export interface ClientToServerEvents {
    */
   "lobby:setTopics": (
     payload: SetTopicsPayload,
+    ack: (result: Ack<Record<string, never>>) => void,
+  ) => void;
+  /**
+   * Host only, and — like the topics — only while the lobby is being set up.
+   * A running game is already matching guesses against answers written in one
+   * language, so switching mid-game would mean a round whose content and whose
+   * scoring disagreed.
+   */
+  "lobby:setLanguage": (
+    payload: SetLanguagePayload,
     ack: (result: Ack<Record<string, never>>) => void,
   ) => void;
   /** Host only. */

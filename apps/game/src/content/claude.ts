@@ -28,6 +28,11 @@ import {
  *    attempt is told what was wrong with the first rather than re-rolling the
  *    same dice.
  *
+ * One call produces the round in *every* language, which is why the request
+ * carries a list rather than one: the subject, the search, the picture and the
+ * cached prompt prefix are shared, so a second language costs a few hundred
+ * output tokens instead of a second round trip and a second download.
+ *
  * An image round leaves here as *bytes*, downloaded and verified, not as a URL
  * to hope about later — the bank stores them and the players load the picture
  * from this server's own origin.
@@ -85,7 +90,7 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 const IMAGE_DOWNLOAD_TIMEOUT_MS = 8_000;
 
 const SUBMIT_ROUND_DESCRIPTION =
-  "Submit the finished round. Call this exactly once, as your final action, with the fields for the round kind you were given.";
+  "Submit the finished round. Call this exactly once, as your final action, with the fields for the round kind you were given and one entry in versions for every language you were asked for.";
 
 export interface ClaudeRoundGeneratorOptions {
   apiKey: string;
@@ -141,6 +146,7 @@ export function createClaudeRoundGenerator(
         content: buildUserPrompt({
           topic: request.topic,
           kind: request.kind,
+          languages: request.languages,
           number: request.number,
           exclude: request.exclude,
           retryNote,
@@ -213,7 +219,7 @@ export function createClaudeRoundGenerator(
           throw new RoundSourceError(failure.message, { cause: error, detail: failure.detail });
         }
 
-        const parsed = parseSubmission(input, request.kind);
+        const parsed = parseSubmission(input, request.kind, request.languages);
         if (!parsed.ok) {
           // The reason is fed back to the model *and* logged: a run of
           // rejections in the log is the only way anyone finds out the prompt
@@ -226,15 +232,15 @@ export function createClaudeRoundGenerator(
           continue;
         }
 
-        const found = {
-          question: parsed.question,
-          answer: parsed.answer,
-          aliases: parsed.aliases,
-          subject: parsed.subject,
-        };
+        const found = { subject: parsed.subject, texts: parsed.texts };
 
         if (parsed.kind === "lyrics") {
-          return { kind: "lyrics", snippet: parsed.snippet, ...found } satisfies GeneratedRound;
+          return {
+            kind: "lyrics",
+            snippet: parsed.snippet,
+            snippetLanguage: parsed.snippetLanguage,
+            ...found,
+          } satisfies GeneratedRound;
         }
 
         const image = await firstDownloadableImage(

@@ -6,6 +6,7 @@ export type ErrorCode =
   | "INVALID_NICKNAME"
   | "INVALID_TARGET_SCORE"
   | "INVALID_TOPICS"
+  | "INVALID_LANGUAGE"
   | "NOT_HOST"
   | "NOT_ENOUGH_PLAYERS"
   /** A guess arrived for a round that is not taking any: too early, or over. */

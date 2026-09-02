@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import type { LobbyState, TopicId } from "@guessly/protocol"
+import type { LanguageId, LobbyState, TopicId } from "@guessly/protocol"
 
 import {
   getServerSnapshot,
@@ -35,9 +35,15 @@ export interface Lobby {
   pending: LobbyPending
   /** False only while a stored seat is still being reclaimed. */
   settled: boolean
-  create(nickname: string, targetScore: number, topics: TopicId[]): void
+  create(
+    nickname: string,
+    targetScore: number,
+    topics: TopicId[],
+    language: LanguageId
+  ): void
   join(code: string, nickname: string): void
   setTopics(topics: TopicId[]): void
+  setLanguage(language: LanguageId): void
   setTargetScore(targetScore: number): void
   start(): void
   /** The one call here whose answer does not arrive as a snapshot. See lobby-client. */

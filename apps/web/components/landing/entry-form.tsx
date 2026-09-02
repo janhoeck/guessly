@@ -4,6 +4,7 @@ import * as React from "react"
 import { useRouter, useSearchParams } from "next/navigation"
 import {
   ALL_TOPIC_IDS,
+  DEFAULT_LANGUAGE,
   DEFAULT_TARGET_SCORE,
   NICKNAME_MAX_LENGTH,
   NICKNAME_MIN_LENGTH,
@@ -77,10 +78,11 @@ function EntryForm() {
       if (hasCode) lobby.join(code, name)
       return
     }
-    // A new lobby opens on the defaults — every topic, the default target —
-    // and is configured in the dialog that opens with it, where the host can
-    // see the code they are about to read out at the same time.
-    lobby.create(name, DEFAULT_TARGET_SCORE, [...ALL_TOPIC_IDS])
+    // A new lobby opens on the defaults — every topic, the default target, the
+    // default language — and is configured in the dialog that opens with it,
+    // where the host can see the code they are about to read out at the same
+    // time.
+    lobby.create(name, DEFAULT_TARGET_SCORE, [...ALL_TOPIC_IDS], DEFAULT_LANGUAGE)
   }
 
   return (
@@ -172,6 +174,7 @@ function EntryForm() {
           playerId={lobby.playerId}
           starting={lobby.pending === "start"}
           onSetTopics={lobby.setTopics}
+          onSetLanguage={lobby.setLanguage}
           onSetTargetScore={lobby.setTargetScore}
           onStart={lobby.start}
           onLeave={lobby.leave}

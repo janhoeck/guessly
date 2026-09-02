@@ -1,4 +1,10 @@
-import { topicById, type RoundKind, type TopicId } from "@guessly/protocol";
+import {
+  languageById,
+  topicById,
+  type LanguageId,
+  type RoundKind,
+  type TopicId,
+} from "@guessly/protocol";
 
 /**
  * The prompt.
@@ -45,7 +51,50 @@ write anything alongside it.
 - **Fresh.** You are told what this game has already used. Never repeat one, and
   do not pick something the players would call by the same name.
 
-# The question
+# The languages
+
+**One subject, one picture, and one entry per language.** You are told which
+languages to write the round in, and you write it in all of them in the same
+call: same subject, same photograph, same paraphrase, one entry each in
+"versions". They are the same round seen by different rooms, not different
+rounds.
+
+What changes between the entries is the *question* and the *answer*. What the
+round shows — the picture, or a lyrics round's lines — does not change at all.
+
+Each entry is *written* in its language rather than translated into it. The
+question a German room reads is the question a German would ask, not an English
+question rendered into German.
+
+- **The answer is the name that language actually uses.** For German the answer
+  is "Frankreich" and not "France" — whatever a player would type without
+  stopping to think about it. Where the language genuinely uses the foreign
+  name, that name *is* the answer: the film "Inception" is "Inception" in
+  German too.
+- **Names are not words, and names are not translated.** A brand, a band, a
+  song title, a person, a product: the answer is the same string in every
+  entry, spelled the way the thing itself spells it. "Nintendo" is
+  "Nintendo", "Volkswagen" is "Volkswagen", "Bohemian Rhapsody" is "Bohemian
+  Rhapsody" — in every language, every time. Never render a name into the
+  room's language, and never describe it instead of naming it. What changes
+  around a name is the question and the aliases.
+- **A work with a real local title is the one exception.** Some films and
+  books genuinely go by a different name in a country, and if that name is the
+  one people there use, it is that language's answer and the original is one
+  of its aliases: real people type both. This is about titles that were
+  actually published that way, not about translating one yourself.
+- **The aliases are that language's alternatives** — its spellings, its
+  abbreviations, the short form people say out loud, and the English or
+  international name when its speakers use that too. An alias earns its place
+  by being something somebody will actually type.
+- **Pick a subject every one of those rooms would know.** This is the one way
+  writing for several languages changes what you choose: something famous in
+  one country and unheard of in another makes a round that half the lobbies
+  served it will score zero on. Prefer what travels.
+
+# The question and the answer
+
+Both live inside each entry of "versions", so everything below is per language.
 
 \`question\` is the single line printed above the content, and it is what turns a
 picture into a round: "Which country's flag is this?", "Who sings this?", "What
@@ -55,8 +104,6 @@ Fit it to the subject exactly — a round about a person asks who, a round about
 place asks what it is called. Keep it under about ten words, ask for one thing
 only, and never let the answer or any part of it appear in the question. "Who
 sings Bohemian Rhapsody?" is not a round; "Who sings this?" is.
-
-# The answer
 
 \`answer\` is the shortest thing a player would actually type. "Bhutan", not
 "the flag of the Kingdom of Bhutan". "Inception", not "Inception (2010)".
@@ -163,9 +210,26 @@ still from the film, the mark on its own, the flag by itself.
 
 The players are naming a song from a few lines of text.
 
+**There is one paraphrase, and it is written in the language the song is sung
+in.** An English song reads English in a German room; a German song reads
+German in an English one. Half of what makes a lyric recognisable is the
+language it is in, and a translated paraphrase of "Bohemian Rhapsody" is a
+round nobody gets. That is why "lyrics_snippet" sits beside the picture and not
+inside "versions": every room sees the same lines.
+
+Set "lyrics_language" to that song's code — "en" for an English song, "de" for
+a German one, "es" for a Spanish one. Only the question and the answer follow
+the room, and the answer is the song's own title, unchanged in every entry.
+
 **Do not reproduce real lyrics.** Not a verse, not a line, not a distinctive
 phrase, not the hook, not the title. Lyrics are copyrighted, and quoting them is
 not something this game does.
+
+Writing in the song's own language makes that harder rather than easier — the
+real words are right there, and the nearest phrasing is the one you have to
+avoid. Change more, not less: different words, different sentence shapes, the
+same pictures. If you cannot say what the song says without falling back into
+how it says it, pick a different song.
 
 Write \`lyrics_snippet\` instead as three to five short lines that *paraphrase*
 the opening or the chorus: say what the singer says, in your own words, in the
@@ -190,15 +254,18 @@ answer were the band.
 
 # Reminder
 
-Call \`${SUBMIT}\` once. Fill in the fields for the kind of round you were asked
-for and leave the other kind's field empty. Nothing else.`;
+Call \`${SUBMIT}\` once, with one entry in "versions" for every language you
+were given. Fill in the fields for the kind of round you were asked for and
+leave the other kind's field empty. Nothing else.`;
 
 /** The per-round half: short, last, and the only part that varies. */
 export function buildUserPrompt(options: {
   topic: TopicId;
   kind: RoundKind;
+  /** Every language the round is to be written in. */
+  languages: readonly LanguageId[];
   number: number;
-  /** Answers already used this game. */
+  /** Answers already used, in whatever language they were used in. */
   exclude: readonly string[];
   /** Why the previous attempt was thrown away, when there was one. */
   retryNote?: string;
@@ -211,10 +278,24 @@ export function buildUserPrompt(options: {
     } round.`,
   ];
 
+  // Each language is named in English so the instruction cannot be misread,
+  // and in its own words because that is what the answers have to end up
+  // looking like. The id goes with them because it is what the entry has to
+  // carry back.
+  const written = options.languages
+    .map((id) => {
+      const language = languageById(id);
+      return `${language.label} (${language.endonym}, "${id}")`;
+    })
+    .join(" and ");
+  lines.push(
+    `Write this round in ${written} — one entry in "versions" for each, and nothing else in there.`,
+  );
+
   lines.push(
     options.exclude.length === 0
       ? "Nothing has been used yet this game."
-      : `Already used this game, so off limits: ${options.exclude.join(", ")}.`,
+      : `Already used, so off limits in every language: ${options.exclude.join(", ")}.`,
   );
 
   // Told rather than merely retried: a second sample of the same prompt tends to

@@ -1,7 +1,13 @@
 "use client"
 
-import { MIN_PLAYERS_TO_START, type LobbyState, type TopicId } from "@guessly/protocol"
+import {
+  MIN_PLAYERS_TO_START,
+  type LanguageId,
+  type LobbyState,
+  type TopicId,
+} from "@guessly/protocol"
 
+import { LanguageSelect, LanguageSummary } from "@/components/lobby/language-select"
 import { PlayerList } from "@/components/lobby/player-list"
 import { TargetScore, TargetScoreSummary } from "@/components/lobby/target-score"
 import { TopicSelect, TopicSummary } from "@/components/lobby/topic-select"
@@ -31,6 +37,7 @@ function LobbyDialog({
   playerId,
   starting,
   onSetTopics,
+  onSetLanguage,
   onSetTargetScore,
   onStart,
   onLeave,
@@ -39,6 +46,7 @@ function LobbyDialog({
   playerId: string
   starting: boolean
   onSetTopics: (topics: TopicId[]) => void
+  onSetLanguage: (language: LanguageId) => void
   onSetTargetScore: (targetScore: number) => void
   onStart: () => void
   onLeave: () => void
@@ -74,6 +82,16 @@ function LobbyDialog({
           <TopicSelect selected={state.topics} onChange={onSetTopics} disabled={!waiting} />
         ) : (
           <TopicSummary selected={state.topics} />
+        )}
+
+        {isHost ? (
+          <LanguageSelect
+            language={state.language}
+            onChange={onSetLanguage}
+            disabled={!waiting}
+          />
+        ) : (
+          <LanguageSummary language={state.language} />
         )}
 
         {isHost ? (

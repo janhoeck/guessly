@@ -9,6 +9,7 @@ describe("normalize", () => {
   it.each([
     ["case", "BHUTAN", "bhutan"],
     ["accents", "Köln", "koln"],
+    ["the sharp s", "Weiße Rose", "weisse rose"],
     ["punctuation", "Ben & Jerry's!", "ben and jerry s"],
     ["runs of whitespace", "  united   states  ", "united states"],
     ["a leading article", "The Beatles", "beatles"],
@@ -36,6 +37,17 @@ describe("matchesAnswer", () => {
     ["punctuation", "Bhutan!"],
   ])("accepts an answer with %s", (_label, guess) => {
     expect(accepts(guess, "Bhutan")).toBe(true);
+  });
+
+  /**
+   * A German answer typed on a keyboard with no ß, which is most keyboards
+   * outside Germany and Austria and — more to the point — most phones. Folded
+   * rather than left to the edit budget, which an answer with two of them would
+   * spend entirely on typing that was not actually wrong.
+   */
+  it("accepts ss for ß without spending an edit on it", () => {
+    expect(accepts("Fussball", "Fußball")).toBe(true);
+    expect(accepts("Weisse Rose", "Weiße Rose")).toBe(true);
   });
 
   it("accepts an alias", () => {

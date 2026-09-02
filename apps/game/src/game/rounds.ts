@@ -31,6 +31,13 @@ export interface RoundRunner {
    * the round number back, so a call that arrives a beat late does nothing.
    */
   finishEarly(code: string, number: number): void;
+  /**
+   * Somebody left, dropped or came back, so the deadline a short-handed game is
+   * counting down to may have moved. Keeps a timer against whatever the store
+   * has stamped — see `LobbyState.desertedEndsAt` — and calls the game off when
+   * it runs out. Does nothing for a lobby with no game in flight.
+   */
+  rosterChanged(code: string): void;
   /** Drops whatever is in flight for a lobby. Safe to call for a lobby with nothing running. */
   cancel(code: string): void;
 }
@@ -67,6 +74,12 @@ interface Running {
    * fresh topic, so a build that fails twice ends the game instead of looping.
    */
   retriedNumber: number | null;
+  /**
+   * Keeping time against `desertedEndsAt`, when the store has stamped one.
+   * Replaced rather than added to on each roster change, because there is only
+   * ever one deadline to be waiting on.
+   */
+  desertion: NodeJS.Timeout | null;
 }
 
 export function createRoundRunner(deps: RoundRunnerDeps): RoundRunner {
@@ -79,6 +92,8 @@ export function createRoundRunner(deps: RoundRunnerDeps): RoundRunner {
     current.controller.abort();
     for (const timer of current.timers) clearTimeout(timer);
     current.timers.clear();
+    if (current.desertion !== null) clearTimeout(current.desertion);
+    current.desertion = null;
     current.finish = null;
     current.prefetch = null;
   };
@@ -267,6 +282,7 @@ export function createRoundRunner(deps: RoundRunnerDeps): RoundRunner {
         finish: null,
         prefetch: null,
         retriedNumber: null,
+        desertion: null,
       };
       running.set(request.code, run);
       play(run, request);
@@ -276,6 +292,35 @@ export function createRoundRunner(deps: RoundRunnerDeps): RoundRunner {
       const run = running.get(code);
       if (!run || run.number !== number) return;
       run.finish?.();
+    },
+
+    rosterChanged(code) {
+      const run = running.get(code);
+      if (!run) return;
+
+      if (run.desertion !== null) clearTimeout(run.desertion);
+      run.desertion = null;
+
+      // Whether the room is short-handed, and until when, is the store's
+      // question — the same one it already answered for every player looking at
+      // the snapshot. Null is a lobby with enough people in it, and there is
+      // nothing to wait for.
+      const endsAt = deps.store.snapshot(code)?.desertedEndsAt;
+      if (endsAt == null) return;
+
+      run.desertion = setTimeout(
+        () => {
+          run.desertion = null;
+          const state = deps.store.endIfDeserted(code);
+          // Somebody came back between the deadline and this firing.
+          if (!state) return;
+
+          console.log(`[game] ${code} called off: not enough players left to play it`);
+          deps.broadcast(state);
+          settle(code, run);
+        },
+        Math.max(0, endsAt - Date.now()),
+      );
     },
 
     cancel(code) {

@@ -1,6 +1,7 @@
 import {
   ALL_TOPIC_IDS,
   COUNTDOWN_DURATION_MS,
+  DESERTED_GAME_GRACE_MS,
   EMPTY_LOBBY_TTL_MS,
   GUESS_MAX_LENGTH,
   IDLE_LOBBY_TTL_MS,
@@ -14,6 +15,8 @@ import {
   NICKNAME_MAX_LENGTH,
   NICKNAME_MIN_LENGTH,
   ROUND_DURATION_MS,
+  isLanguageId,
+  isPlaying,
   isTopicId,
   topicById,
   err,
@@ -26,6 +29,7 @@ import {
   type GuessResult,
   type JoinLobbyPayload,
   type JoinLobbyResult,
+  type LanguageId,
   type LobbyClosedReason,
   type LobbyState,
   type LobbyStatus,
@@ -75,6 +79,12 @@ export interface RoundRequest {
   number: number;
   topic: TopicId;
   kind: RoundKind;
+  /**
+   * What language to write it in. It rides on the request rather than being
+   * looked up, because a source that has to ask the store which lobby this was
+   * for is a source that knows about lobbies.
+   */
+  language: LanguageId;
   /** Answers this game has already used, so a source can avoid repeating one. */
   exclude: string[];
   /**
@@ -131,6 +141,7 @@ export interface LobbyStore {
   resume(payload: ResumeLobbyPayload): Ack<ResumeLobbyResult>;
   setTarget(code: string, playerId: string, targetScore: number): Ack<Record<string, never>>;
   setTopics(code: string, playerId: string, topics: TopicId[]): Ack<Record<string, never>>;
+  setLanguage(code: string, playerId: string, language: LanguageId): Ack<Record<string, never>>;
   /**
    * Opens the countdown and draws round one's topic. The ack is what the
    * content source needs to go and build the round — the caller is expected to
@@ -193,8 +204,26 @@ export interface LobbyStore {
   ): { state: LobbyState; request: RoundRequest } | null;
   /** The content could not be built. The lobby goes back to being a lobby. */
   abandonRound(code: string, number: number): LobbyState | null;
-  /** Intentional exit. Returns the snapshot to broadcast, or null if there is nobody left to tell. */
+  /**
+   * Intentional exit. Returns the snapshot to broadcast, or null if there is
+   * nobody left to tell.
+   *
+   * A departure that leaves a running game with a single player ends it: the
+   * snapshot that comes back is `finished`, and the caller is expected to drop
+   * whatever it still has in flight for that lobby.
+   */
   leave(code: string, playerId: string): LobbyState | null;
+  /**
+   * The grace a short-handed game gets has run out. Ends the game if there is
+   * still nobody to play it and returns the snapshot to broadcast; null if
+   * somebody came back, or the lobby is not playing a game any more.
+   *
+   * This counts who is *connected*, where `leave` counts seats: a drop is only
+   * a departure once it has lasted. The store stamps the deadline into every
+   * snapshot as `desertedEndsAt` and owns no clocks, so the waiting is the
+   * caller's — it just has to be told when the wait is up.
+   */
+  endIfDeserted(code: string): LobbyState | null;
   /** Involuntary drop. The seat is kept; how long depends on the phase. */
   disconnect(code: string, playerId: string): LobbyState | null;
   sweep(): SweepResult;
@@ -265,6 +294,13 @@ export function createLobbyStore(overrides: Partial<LobbyStoreDeps> = {}): Lobby
         error: "INVALID_TARGET_SCORE",
         message: `The target score is a whole number from ${MIN_TARGET_SCORE} to ${MAX_TARGET_SCORE}.`,
       };
+    }
+    return null;
+  };
+
+  const checkLanguage = (language: unknown): AckFailure | null => {
+    if (!isLanguageId(language)) {
+      return { ok: false, error: "INVALID_LANGUAGE", message: "That is not a language." };
     }
     return null;
   };
@@ -345,12 +381,17 @@ export function createLobbyStore(overrides: Partial<LobbyStoreDeps> = {}): Lobby
     lobby.status = "countdown";
     lobby.round = round;
     lobby.lastActivityAt = now;
+    // A phase change is a change in whether being short-handed matters at all,
+    // so the deadline is re-decided here as well as on every roster change. A
+    // grace already running survives it — see `restampDesertion`.
+    restampDesertion(lobby, now);
 
     return {
       code: lobby.code,
       number: round.number,
       topic: round.topic,
       kind: round.kind,
+      language: lobby.language,
       exclude: [...lobby.usedAnswers],
       startsAt: round.startsAt,
     };
@@ -419,6 +460,61 @@ export function createLobbyStore(overrides: Partial<LobbyStoreDeps> = {}): Lobby
   };
 
   /**
+   * How many players are actually here. A seat whose owner has dropped is held,
+   * but it is not somebody you can play against, so nothing that asks "are
+   * there enough people for a game" counts one.
+   */
+  const presentCount = (lobby: LobbyRecord): number => {
+    let present = 0;
+    for (const player of lobby.players.values()) {
+      if (player.connected) present += 1;
+    }
+    return present;
+  };
+
+  /**
+   * A party game needs a party, so a game the room has emptied out of is over —
+   * there is nobody left for the last player to race, and dealing them rounds
+   * to answer alone is a worse ending than saying so.
+   *
+   * `finished` rather than back to `lobby` because the scores are the point:
+   * the standings stand where the game left them, and it is the state a rematch
+   * will one day be offered from.
+   */
+  const callGameOff = (lobby: LobbyRecord): void => {
+    lobby.status = "finished";
+    lobby.desertedEndsAt = null;
+    // Whatever was in flight belongs to a game nobody is playing. Left in the
+    // snapshot it would be a running clock and an unanswerable question on a
+    // finished lobby; every round-scoped transition still quoting it is
+    // already refused by `roundInPhase`, on the status alone.
+    lobby.round = null;
+  };
+
+  /**
+   * Stamp — or clear — the deadline a short-handed game is counting down to.
+   *
+   * Called wherever the roster or the phase can change. The deadline goes out
+   * in the snapshot, so this is the whole of the rule: the store decides *when*
+   * a game runs out of players and everything else, the runner's timer and the
+   * warning on screen alike, reads it off here rather than working it out
+   * again.
+   *
+   * `??=` is the load-bearing part. Stamped when the room *becomes* too small
+   * to play, cleared the moment it is not, and deliberately left alone while it
+   * stays too small: a third player dropping is not a reason to give the second
+   * one another thirty seconds, and a deadline that jumped whenever somebody
+   * else's tab closed would render as a countdown running backwards.
+   */
+  const restampDesertion = (lobby: LobbyRecord, now: number): void => {
+    if (!isPlaying(lobby.status) || presentCount(lobby) >= MIN_PLAYERS_TO_START) {
+      lobby.desertedEndsAt = null;
+      return;
+    }
+    lobby.desertedEndsAt ??= now + DESERTED_GAME_GRACE_MS;
+  };
+
+  /**
    * The statuses are a parameter rather than a constant because the host powers
    * do not all open the same window: the target score and starting a game are
    * settled before kick-off, while topics can also be re-picked once a game has
@@ -441,7 +537,7 @@ export function createLobbyStore(overrides: Partial<LobbyStoreDeps> = {}): Lobby
   };
 
   return {
-    create({ nickname, targetScore, topics }) {
+    create({ nickname, targetScore, topics, language }) {
       const name = nickname.trim();
       const nameError = checkNickname(name);
       if (nameError) return nameError;
@@ -449,6 +545,8 @@ export function createLobbyStore(overrides: Partial<LobbyStoreDeps> = {}): Lobby
       if (targetError) return targetError;
       const topicsError = checkTopics(topics);
       if (topicsError) return topicsError;
+      const languageError = checkLanguage(language);
+      if (languageError) return languageError;
 
       const code = allocateCode();
       if (code === null) {
@@ -463,9 +561,11 @@ export function createLobbyStore(overrides: Partial<LobbyStoreDeps> = {}): Lobby
         targetScore,
         hostId: host.id,
         topics: normalizeTopics(topics),
+        language,
         players: new Map([[host.id, host]]),
         round: null,
         usedAnswers: [],
+        desertedEndsAt: null,
         createdAt: now,
         lastActivityAt: now,
       };
@@ -525,6 +625,10 @@ export function createLobbyStore(overrides: Partial<LobbyStoreDeps> = {}): Lobby
       player.connected = true;
       player.disconnectedAt = null;
       lobby.lastActivityAt = now;
+      // Somebody is back. If they were the one the game was waiting on, the
+      // grace is off — and the snapshot below says so, which is what takes the
+      // warning off everybody's screen.
+      restampDesertion(lobby, now);
       // hostId is deliberately untouched: a returning host does not take it back.
 
       return ok({ state: toLobbyState(lobby, now) });
@@ -552,15 +656,26 @@ export function createLobbyStore(overrides: Partial<LobbyStoreDeps> = {}): Lobby
       return ok({});
     },
 
+    setLanguage(code, playerId, language) {
+      // The same window as the topics, and for a harder reason than symmetry: a
+      // running game holds an answer and its aliases in one language, so a
+      // switch mid-round would leave the matcher comparing German typing to an
+      // English answer.
+      const host = requireHost(code, playerId, CONFIGURABLE_STATUSES);
+      if ("ok" in host) return host;
+      const languageError = checkLanguage(language);
+      if (languageError) return languageError;
+
+      host.lobby.language = language;
+      host.lobby.lastActivityAt = deps.now();
+      return ok({});
+    },
+
     start(code, playerId) {
       const host = requireHost(code, playerId, ["lobby"]);
       if ("ok" in host) return host;
 
-      let connected = 0;
-      for (const player of host.lobby.players.values()) {
-        if (player.connected) connected += 1;
-      }
-      if (connected < MIN_PLAYERS_TO_START) {
+      if (presentCount(host.lobby) < MIN_PLAYERS_TO_START) {
         return err("NOT_ENOUGH_PLAYERS", `You need ${MIN_PLAYERS_TO_START} players to start.`);
       }
 
@@ -613,6 +728,7 @@ export function createLobbyStore(overrides: Partial<LobbyStoreDeps> = {}): Lobby
         number: number + 1,
         topic,
         kind: topicById(topic).kind,
+        language: lobby.language,
         exclude,
         startsAt:
           (round.endsAt ?? deps.now()) + INTERMISSION_DURATION_MS + COUNTDOWN_DURATION_MS,
@@ -760,6 +876,28 @@ export function createLobbyStore(overrides: Partial<LobbyStoreDeps> = {}): Lobby
       const now = deps.now();
       lobby.lastActivityAt = now;
       if (lobby.hostId === playerId) promoteHost(lobby);
+      // A seat that has been given up cannot come back, so there is nothing to
+      // wait for: a game the remaining seats could not have started is over the
+      // moment somebody walks out of it. A seat that merely *dropped* gets the
+      // grace instead — see `endIfDeserted`.
+      if (isPlaying(lobby.status) && lobby.players.size < MIN_PLAYERS_TO_START) {
+        callGameOff(lobby);
+      } else {
+        restampDesertion(lobby, now);
+      }
+      return toLobbyState(lobby, now);
+    },
+
+    endIfDeserted(code) {
+      const lobby = lobbies.get(normalizeCode(code));
+      if (!lobby || !isPlaying(lobby.status)) return null;
+      // Somebody came back inside the grace, or a seat that was never the
+      // problem dropped. Either way there is still a game here.
+      if (presentCount(lobby) >= MIN_PLAYERS_TO_START) return null;
+
+      const now = deps.now();
+      callGameOff(lobby);
+      lobby.lastActivityAt = now;
       return toLobbyState(lobby, now);
     },
 
@@ -774,6 +912,9 @@ export function createLobbyStore(overrides: Partial<LobbyStoreDeps> = {}): Lobby
       player.disconnectedAt = now;
       lobby.lastActivityAt = now;
       if (lobby.hostId === playerId) promoteHost(lobby);
+      // The seat is held, but the game may just have run out of people to play
+      // it. This is where its clock starts.
+      restampDesertion(lobby, now);
       return toLobbyState(lobby, now);
     },
 

@@ -5,10 +5,12 @@ import {
   err,
   type Ack,
   type GuessResult,
+  type LanguageId,
   type LobbyState,
   type TopicId,
 } from "@guessly/protocol"
 
+import { desertionNotice } from "@/lib/desertion-notice"
 import { clearSeat, readSeat, writeSeat } from "@/lib/session"
 import { getSocket } from "@/lib/socket"
 
@@ -85,8 +87,52 @@ export function serverNow(): number {
   return Date.now() + clockOffset
 }
 
+/**
+ * One id for the whole episode, so the warning, the reprieve and the obituary
+ * replace one another in place instead of stacking three toasts about the same
+ * two people.
+ */
+const DESERTION_TOAST = "deserted"
+
+/**
+ * Put whatever `desertionNotice` decided on screen. The decision is over there
+ * and tested there; this is the half that owns a toast.
+ */
+function warnAboutDesertion(before: LobbyState | null, after: LobbyState): void {
+  const notice = desertionNotice(before, after)
+  if (notice === null) {
+    // Nothing to say — including a game won out from under a grace, where the
+    // warning still has to come down.
+    if (before?.desertedEndsAt != null && after.desertedEndsAt === null) {
+      toast.dismiss(DESERTION_TOAST)
+    }
+    return
+  }
+
+  if (notice.kind === "warn") {
+    toast.warning(
+      `${notice.away} dropped out. The game ends in ${notice.seconds} seconds unless they come back.`,
+      // Outlives the grace and no longer, so a tab that stops hearing from the
+      // server is left with a stale scoreboard rather than a stuck warning.
+      { id: DESERTION_TOAST, duration: Math.max(2_000, notice.ms) }
+    )
+    return
+  }
+
+  if (notice.kind === "recovered") {
+    toast.success("Back in the game.", { id: DESERTION_TOAST, duration: 4_000 })
+    return
+  }
+
+  toast.error("Nobody came back, so the game was called off.", {
+    id: DESERTION_TOAST,
+    duration: 8_000,
+  })
+}
+
 function receive(state: LobbyState): void {
   clockOffset = state.serverNow - Date.now()
+  warnAboutDesertion(snapshot.state, state)
   set({ state })
 }
 
@@ -120,6 +166,8 @@ function guard<T>(handle: (result: Ack<T>) => void): (result: Ack<T>) => void {
 
 function forget(): void {
   clearSeat()
+  // Whatever this tab was being warned about is somebody else's problem now.
+  toast.dismiss(DESERTION_TOAST)
   set({ state: null, playerId: null, pending: null, settled: true })
 }
 
@@ -153,6 +201,10 @@ function resume(): void {
         return
       }
       clockOffset = result.data.state.serverNow - Date.now()
+      // A reload lands in whatever was already happening, and a game counting
+      // down to being called off is the thing you most want to be told about
+      // on arrival.
+      warnAboutDesertion(snapshot.state, result.data.state)
       set({ state: result.data.state, playerId: seat.playerId, settled: true })
     })
   )
@@ -208,13 +260,18 @@ export function getServerSnapshot(): LobbySnapshot {
 }
 
 export const lobbyActions = {
-  create(nickname: string, targetScore: number, topics: TopicId[]): void {
+  create(
+    nickname: string,
+    targetScore: number,
+    topics: TopicId[],
+    language: LanguageId
+  ): void {
     const socket = getSocket()
     socket.connect()
     set({ pending: "create" })
     socket.emit(
       "lobby:create",
-      { nickname, targetScore, topics },
+      { nickname, targetScore, topics, language },
       guard((result) => {
         if (!result.ok) {
           set({ pending: null })
@@ -256,6 +313,16 @@ export const lobbyActions = {
       { topics },
       guard((result) => {
         // The broadcast is what moves the UI, so success needs nothing here.
+        if (!result.ok) toast.error(result.message)
+      })
+    )
+  },
+
+  setLanguage(language: LanguageId): void {
+    getSocket().emit(
+      "lobby:setLanguage",
+      { language },
+      guard((result) => {
         if (!result.ok) toast.error(result.message)
       })
     )

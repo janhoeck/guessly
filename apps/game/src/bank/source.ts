@@ -1,12 +1,18 @@
-import { topicById, type TopicId } from "@guessly/protocol";
+import {
+  ALL_LANGUAGE_IDS,
+  topicById,
+  type LanguageId,
+  type TopicId,
+} from "@guessly/protocol";
 import type {
   GeneratedRound,
+  GeneratedTexts,
   RoundContentSource,
   RoundGenerator,
   SourcedRound,
 } from "../content/source.js";
 import type { ImageStore } from "./images.js";
-import type { NewBankedRound, RoundRepository } from "./repository.js";
+import type { BankedRound, NewBankedRound, RoundRepository } from "./repository.js";
 
 /**
  * The round bank: the `RoundContentSource` the game actually talks to.
@@ -17,6 +23,13 @@ import type { NewBankedRound, RoundRepository } from "./repository.js";
  * never paid for twice. Every draw that leaves a topic's shelf low kicks a
  * background top-up, so the pool fills *because* the game is being played and
  * the generator drifts to where the players' latency is not.
+ *
+ * **A round is banked in every language at once.** The generator is asked for
+ * all of them in one call, and the one picture is downloaded and stored once,
+ * so a German lobby and an English one are dealt the same photograph with the
+ * question and the answer each room can read. What a lobby is *shown* is its
+ * own language; what it is allowed to *type* is every language the round holds,
+ * which is why `toSourced` folds the others' answers into the alias list.
  *
  * The bank is an optimisation with a database, never a new way to fail: a draw
  * that errors falls through to the generator, a round that cannot be banked is
@@ -30,7 +43,8 @@ import type { NewBankedRound, RoundRepository } from "./repository.js";
  * draw. High enough that one game rarely bottoms a topic out, low enough that
  * an idle server is not quietly spending money on a fuller larder than anyone
  * has asked for. Filling happens one round per topic at a time, for the same
- * reason.
+ * reason — and one round means one round in every language, so the gauge is
+ * read against the language that was just drawn.
  */
 const DEFAULT_LOW_WATER = 8;
 
@@ -41,6 +55,8 @@ export interface BankedRoundSourceOptions {
   /** Where a player's browser reaches this server, e.g. "http://localhost:3001". */
   publicBaseUrl: string;
   lowWater?: number;
+  /** Which languages a fresh round is written in. The whole catalogue, in practice. */
+  languages?: readonly LanguageId[];
   now?: () => number;
 }
 
@@ -54,6 +70,7 @@ export interface BankedRoundSource extends RoundContentSource {
 export function createBankedRoundSource(options: BankedRoundSourceOptions): BankedRoundSource {
   const { repository, images, generator } = options;
   const lowWater = options.lowWater ?? DEFAULT_LOW_WATER;
+  const languages = options.languages ?? ALL_LANGUAGE_IDS;
   const now = options.now ?? Date.now;
   const baseUrl = options.publicBaseUrl.replace(/\/+$/, "");
 
@@ -65,23 +82,72 @@ export function createBankedRoundSource(options: BankedRoundSourceOptions): Bank
 
   const imageUrl = (filename: string): string => `${baseUrl}/img/${filename}`;
 
-  const toSourced = (round: {
-    kind: "image" | "lyrics";
-    question: string;
-    answer: string;
-    aliases: string[];
-    subject: string;
-    snippet: string | null;
-    servedImageUrl: string | null;
-  }): SourcedRound => ({
-    content:
-      round.kind === "lyrics"
-        ? { kind: "lyrics", question: round.question, snippet: round.snippet ?? "" }
-        : { kind: "image", question: round.question, imageUrl: round.servedImageUrl ?? "" },
-    answer: round.answer,
-    aliases: round.aliases,
-    subject: round.subject,
-  });
+  /**
+   * Everything a player may type and be right, gathered from every language
+   * the round was written in.
+   *
+   * The lobby's own answer and aliases come first because they are the likely
+   * ones; the rest follow because somebody in a German lobby will type
+   * "France" and they will not be wrong about what is on the screen. Deduped
+   * case-insensitively, since the languages agree far more often than not —
+   * a song title is usually the same string in both.
+   */
+  const acceptedAliases = (texts: GeneratedTexts, language: LanguageId): string[] => {
+    const own = texts[language];
+    const seen = new Set<string>(own ? [own.answer.toLowerCase()] : []);
+    const out: string[] = [];
+
+    const add = (candidate: string): void => {
+      const key = candidate.trim().toLowerCase();
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      out.push(candidate);
+    };
+
+    for (const alias of own?.aliases ?? []) add(alias);
+    for (const [id, text] of Object.entries(texts) as [LanguageId, GeneratedTexts[LanguageId]][]) {
+      if (id === language || text === undefined) continue;
+      add(text.answer);
+      for (const alias of text.aliases) add(alias);
+    }
+    return out;
+  };
+
+  /**
+   * One round, as the lobby that asked for it should see it. `texts[language]`
+   * is guaranteed by whoever called — the draw joins on it, and the parser
+   * refuses a generated round missing a language it was asked for.
+   *
+   * Only the question and the answer follow the room. The picture and the
+   * paraphrase are the round, and the round is the same for everybody.
+   */
+  const toSourced = (
+    round: {
+      kind: "image" | "lyrics";
+      subject: string;
+      snippet: string | null;
+      snippetLanguage: string | null;
+      texts: GeneratedTexts;
+    },
+    language: LanguageId,
+    servedImageUrl: string | null,
+  ): SourcedRound => {
+    const text = round.texts[language]!;
+    return {
+      content:
+        round.kind === "lyrics"
+          ? {
+              kind: "lyrics",
+              question: text.question,
+              snippet: round.snippet ?? "",
+              snippetLanguage: round.snippetLanguage,
+            }
+          : { kind: "image", question: text.question, imageUrl: servedImageUrl ?? "" },
+      answer: text.answer,
+      aliases: acceptedAliases(round.texts, language),
+      subject: round.subject,
+    };
+  };
 
   /**
    * Stores a fresh round's image and banks the round. Returns the URL the
@@ -107,19 +173,18 @@ export function createBankedRoundSource(options: BankedRoundSourceOptions): Bank
     const round: NewBankedRound = {
       topic,
       kind: generated.kind,
-      question: generated.question,
-      answer: generated.answer,
-      aliases: generated.aliases,
       subject: generated.subject,
-      snippet: generated.kind === "lyrics" ? generated.snippet : null,
       imageFile,
       sourceUrl: generated.kind === "image" ? generated.image.sourceUrl : null,
+      snippet: generated.kind === "lyrics" ? generated.snippet : null,
+      snippetLanguage: generated.kind === "lyrics" ? generated.snippetLanguage : null,
+      texts: generated.texts,
     };
 
     try {
       const inserted = await repository.insert(round, now(), served);
       if (!inserted) {
-        console.log(`[bank] ${topic}: "${generated.answer}" is already banked; not stored twice`);
+        console.log(`[bank] ${topic}: "${generated.subject}" is already banked; not stored twice`);
       }
     } catch (error) {
       console.error(`[bank] ${topic}: could not bank the round; serving it anyway`, error);
@@ -128,26 +193,35 @@ export function createBankedRoundSource(options: BankedRoundSourceOptions): Bank
     return imageFile === null ? null : imageUrl(imageFile);
   };
 
-  /** Refills one round for a topic sitting below the low-water mark. */
-  const topUpIfLow = (topic: TopicId): void => {
+  /**
+   * Refills one round for a topic sitting below the low-water mark.
+   *
+   * Keyed by topic and not by topic-and-language, because one generated round
+   * fills every language at once: two top-ups for the same topic in different
+   * languages would be the same work done twice. The *gauge* is the language
+   * that was drawn, though — a topic full of rounds none of which were written
+   * in German is an empty shelf to a German lobby.
+   */
+  const topUpIfLow = (topic: TopicId, language: LanguageId): void => {
     if (background.signal.aborted || refilling.has(topic)) return;
     refilling.add(topic);
 
     const task = (async () => {
       try {
-        const stocked = await repository.count(topic);
+        const stocked = await repository.count(topic, language);
         if (stocked >= lowWater) return;
 
-        // The bank's own answers are the exclusion list: the point of a
-        // top-up is a round the shelf does not already hold.
+        // The topic's own answers are the exclusion list, in every language:
+        // the point of a top-up is a subject the shelf does not already hold,
+        // and it holds it whichever language it was written in.
         const exclude = await repository.answers(topic);
         const generated = await generator.generate(
-          { topic, kind: topicById(topic).kind, number: stocked + 1, exclude },
+          { topic, kind: topicById(topic).kind, languages, number: stocked + 1, exclude },
           background.signal,
         );
         await ingest(topic, generated, false);
         console.log(
-          `[bank] ${topic}: topped up with "${generated.answer}" (${stocked + 1}/${lowWater})`,
+          `[bank] ${topic}: topped up with "${generated.subject}" (${stocked + 1}/${lowWater} in ${language})`,
         );
       } catch (error) {
         if (!background.signal.aborted) {
@@ -170,33 +244,59 @@ export function createBankedRoundSource(options: BankedRoundSourceOptions): Bank
 
   return {
     async build(request, signal) {
-      let banked = null;
+      let banked: BankedRound | null = null;
       try {
-        banked = await repository.draw(request.topic, request.exclude, now());
+        banked = await repository.draw(request.topic, request.language, request.exclude, now());
       } catch (error) {
         // The generator can still save the round; the bank being broken is
         // the operator's problem and the log's, not the lobby's.
         console.error(`[bank] draw failed for ${request.topic}; generating instead`, error);
       }
 
-      if (banked) {
+      // The draw joins on the language, so a round that came back without one
+      // is a bank in a state it should not be in — falling through costs a
+      // generation, and serving a round with no question would cost the round.
+      if (banked && banked.texts[request.language]) {
         console.log(
-          `[game] ${request.code} round ${request.number} (${request.topic}): "${banked.subject}" from the bank`,
+          `[game] ${request.code} round ${request.number} (${request.topic}/${request.language}): "${banked.subject}" from the bank`,
         );
-        topUpIfLow(request.topic);
-        return toSourced({
-          ...banked,
-          servedImageUrl: banked.imageFile === null ? null : imageUrl(banked.imageFile),
-        });
+        topUpIfLow(request.topic, request.language);
+        return toSourced(
+          {
+            kind: banked.kind,
+            subject: banked.subject,
+            snippet: banked.snippet,
+            snippetLanguage: banked.snippetLanguage,
+            texts: banked.texts,
+          },
+          request.language,
+          banked.imageFile === null ? null : imageUrl(banked.imageFile),
+        );
       }
 
-      const generated = await generator.generate(request, signal);
+      const generated = await generator.generate(
+        {
+          topic: request.topic,
+          kind: request.kind,
+          // Every language, not just the one waiting: the picture and the
+          // search are already paid for, and the next lobby to play in the
+          // other one is then a bank hit rather than another three seconds.
+          languages,
+          number: request.number,
+          exclude: request.exclude,
+        },
+        signal,
+      );
       const servedImageUrl = await ingest(request.topic, generated, true);
-      return toSourced({
-        ...generated,
-        snippet: generated.kind === "lyrics" ? generated.snippet : null,
+      return toSourced(
+        {
+          ...generated,
+          snippet: generated.kind === "lyrics" ? generated.snippet : null,
+          snippetLanguage: generated.kind === "lyrics" ? generated.snippetLanguage : null,
+        },
+        request.language,
         servedImageUrl,
-      });
+      );
     },
 
     drain,

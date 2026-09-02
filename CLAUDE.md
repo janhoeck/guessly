@@ -81,9 +81,11 @@ build in ~0ms. `apps/game/src/content/` is the producing side: Claude, asked
 for a round. The game only ever talks to the bank (`bank/source.ts` implements
 `RoundContentSource`); the bank talks to the generator when it must:
 
-- **A build is served from the bank** when it holds a round for the topic whose
-  answer the game has not used. The draw rotates — least-served first — so the
-  pool deals its whole shelf before repeating a favourite across games.
+- **A build is served from the bank** when the topic holds a round *written in
+  the lobby's language* whose answer the game has not used. The draw rotates —
+  least-served first — so the pool deals its whole shelf before repeating a
+  favourite across games, and a round rotates once however many languages it
+  holds, because it is one round.
 - **A miss generates in the foreground** (this is the only time players wait on
   the AI) and the fresh round is banked on the way out, so the same work is
   never paid for twice.
@@ -94,6 +96,27 @@ for a round. The game only ever talks to the bank (`bank/source.ts` implements
 - **The bank is an optimisation, never a new way to fail.** A broken draw falls
   through to the generator, a round that cannot be banked is still served, an
   image that cannot be stored is served from its source host.
+
+**A round is one subject and every language at once.** The generator is asked
+for all of them in a single call and the bank stores what the round *shows* —
+the picture, or the paraphrase — on one `rounds` row, with one `round_texts`
+row per language for what it asks and accepts, so the search, the picture and the cached prompt
+prefix are paid for once and the second language costs a few hundred output
+tokens. What that buys the players is a German lobby being dealt, in ~0ms, the
+round an English lobby paid for last night. It also decides the gauge: the
+low-water count asks how many rounds a topic holds *in the language being
+dealt*, because a topic full of rounds none of which were written in German is
+an empty shelf to a German lobby.
+
+`sqlite.ts` carries one migration, and it exists to protect a bank that already
+has pictures in it. A round used to carry its question, answer and aliases
+inline, back when there was one language to say them in; the old table is
+renamed, copied into `rounds` and `round_texts` — everything in it English, and
+its paraphrase staying on the round, where it always belonged — and dropped,
+inside a transaction, because a bank half moved is worse than a bank in either
+shape. Those rounds go on being dealt to English lobbies and are
+passed over for German ones, which is what an empty German shelf looks like
+until play fills it.
 
 **Images are self-hosted.** The generator downloads the picture — whole file,
 capped, format verified by magic bytes rather than by anybody's content-type
@@ -107,11 +130,18 @@ parse, none of them hope:
 
 - **It is a `strict` tool call, not prose.** `submit_round` carries a JSON Schema
   with `additionalProperties: false`, so the input validates by construction.
-  There is no fenced block to find and no preamble to strip.
+  There is no fenced block to find and no preamble to strip. The subject, the
+  kind and the candidate URLs sit at the top level and `versions` carries one
+  entry per language, its `language` enum built from the catalogue — so a new
+  language is an entry in `languages.ts` and nothing in the schema.
 - **It is read back through `parseSubmission`.** The schema promises shape; the
   parser enforces the *rules* a schema cannot express — an answer short enough
   to type, a question that does not name the answer, a lyrics snippet that does
-  not give the song away, a URL that could be an image.
+  not give the song away, a URL that could be an image — and the rule the whole
+  shape exists for: every language asked for came back. A round missing one is
+  a round its lobbies could never be dealt, and it would sit on the shelf
+  looking healthy, so it is refused while the reason can still be told to the
+  model.
 - **A rejected round is asked for again with the reason.** Re-rolling the same
   prompt tends to make the same mistake; naming the mistake does not. A round
   whose candidate URLs all fail to download is rejected the same way.
@@ -128,7 +158,9 @@ prefix.
 **Lyrics are never reproduced.** The prompt asks for a 3–5 line paraphrase — the
 same imagery, person and running order, none of the actual words — and the UI
 labels it "lyrics, paraphrased" rather than letting anyone assume otherwise.
-Real lyrics are copyrighted and this game does not quote them.
+Real lyrics are copyrighted and this game does not quote them. Writing the
+paraphrase in the song's own language makes that *harder*, because the real
+words are the nearest phrasing to hand, so the prompt says so out loud.
 
 `ANTHROPIC_API_KEY` is required at boot. A server that cannot build a round will
 fail in front of players three clicks later, and a crash at start-up says so far
@@ -150,9 +182,11 @@ while you are still typing is the pressure the round is made of, and it gives
 nothing away.
 
 **Matching is normalised, then forgiving.** `lobby/matching.ts` folds away case,
-accents, punctuation, `&`, a leading article and stray whitespace, then compares
-against the answer and every alias with a small edit budget scaled by the
-target's length: nothing under five characters, one to ten, two beyond. The
+accents, German's `ß`, punctuation, `&`, a leading article and stray whitespace,
+then compares against the answer and every alias with a small edit budget scaled
+by the target's length: nothing under five characters, one to ten, two beyond.
+The alias list spans languages — see Languages — so a German lobby scores
+"France" as readily as "Frankreich". The
 tiers are set by where real collisions are rather than by round numbers —
 "Austria"/"Australia" and "Slovakia"/"Slovenia" are two edits apart, so the
 second edit is held back until eleven characters.
@@ -183,6 +217,48 @@ only then is the game over. The lobby moves to `finished` and every client
 navigates to `/<CODE>/results` — **which is deliberately a blank page for now.**
 The winner screen and a rematch on the same lobby are the next piece of work.
 
+**A game can also simply run out of players.** Reaching the target is the way a
+game is *won*; it is not the only way one ends. A party game needs a party, so a
+running game the room has emptied out below `MIN_PLAYERS_TO_START` is over — a
+game that could not have been *started* should not be carried on either, and
+dealing the last player rounds to answer alone is a worse ending than saying so.
+The lobby lands in the same `finished` state a win produces, whatever phase it
+was in: the round in flight is dropped, the standings stand where the game left
+them, and everybody goes to `/<CODE>/results` rather than watching countdowns for
+an opponent who is not coming back.
+
+**How fast depends on whether they can come back**, because the server cannot
+tell a closed tab from a tunnel:
+
+- **A departure is immediate.** `lobby:leave` gives the seat up, and a seat that
+  is gone cannot return, so there is nothing to wait for.
+- **A drop gets `DESERTED_GAME_GRACE_MS` (30s).** The seat is still held — that
+  promise is not withdrawn, and the score is still on the board — but the *game*
+  is called off if nobody has come back when it expires. Long enough for a
+  refresh or a tunnel, short enough that nobody is left playing on their own.
+  Coming back inside it costs nothing.
+
+**The deadline rides in the snapshot**, as `desertedEndsAt` — stamped against
+`serverNow` like every other one, and null while the room has enough people.
+That is what makes the grace something players can see rather than something
+that happens to them: `lib/desertion-notice.ts` reads the transition off two
+snapshots and `lobby-client.ts` puts it in a toast — *"Martin dropped out. The
+game ends in 30 seconds unless they come back."*, then either "Back in the game."
+or, on the otherwise blank results page, "Nobody came back, so the game was
+called off." The seconds are counted off the deadline rather than the constant,
+so a tab that reloads eight seconds in says twenty-two.
+
+The store owns the rule and no clocks. `leave` ends a game the remaining *seats*
+could not field; `endIfDeserted` ends one the remaining *connections* cannot; and
+`restampDesertion` — called on every roster change and every phase change — is
+the one place the deadline is decided. It is stamped when the room *becomes* too
+small and held, not restamped, while it stays that way: a third player dropping
+is not a reason to give the second one another thirty seconds, and a deadline
+that moved would render as a countdown running backwards. The waiting is
+`game/rounds.ts`'s, like every other timer — the adapter tells it `rosterChanged`
+on every leave, drop and resume, and it keeps a timer against whatever the store
+has stamped.
+
 ## Round Types
 
 - **Image** — a picture is displayed and players guess what it shows.
@@ -207,6 +283,59 @@ never mid-game. Within a game, the topic for each round is still drawn at random
 from the selection.
 
 IDs are wire format and never change. Labels and hints are copy and may.
+
+## Languages
+
+A lobby plays in one language, catalogued in
+`packages/protocol/src/languages.ts`: English and German, each carrying a
+label, its endonym and a BCP 47 tag. This is the **content** language and not
+the interface's — the question a round asks, the answer it reveals and a lyrics
+round's paraphrase all come in it, while the game's own furniture stays
+English, which the lobby says out loud rather than leaving a host to find out.
+The tag is what lets `round-stage.tsx` mark that content `lang="de"`, so a
+screen reader does not read German with an English voice.
+
+Every lobby stores its own, defaulting to English. The host picks it in the
+lobby modal beside the topics, and — like the topics — may re-pick before the
+first round or after a winner but never mid-game: a game's `usedAnswers` are in
+one language and the next round is already being fetched in it, so a switch
+halfway through would orphan the prefetch and hand the exclusion list a
+language it no longer speaks.
+
+A German round is not an English round translated on the way out — its question
+is the question a German would ask and its answer is what a German would type,
+both written rather than rendered. But it is the *same round*: one subject, one
+photograph, one row in `rounds` and one `round_texts` row per language, all
+produced in a single call to the generator. That is what makes a second
+language nearly free and a third one additive: a catalogue entry, an enum the
+tool schema builds from it, and rows.
+
+**What the round shows does not follow the room; only what it asks does.** Two
+things are deliberately *not* translated:
+
+- **Names.** A brand, a band, a song title, a person, a product — the answer is
+  the same string in every language, spelled the way the thing spells itself.
+  "Nike" is "Nike". What changes around a name is the question and the aliases.
+  The one exception is a work that genuinely has a local title people use, in
+  which case that is the local answer and the original is an alias.
+- **A lyrics round's paraphrase**, which is written in the language the song is
+  *sung* in. A German room naming an English song reads English, because half
+  of what makes a lyric recognisable is the language it is in, and a translated
+  paraphrase of "Bohemian Rhapsody" is a round nobody gets. So there is exactly
+  one snippet: it lives on `rounds` beside the picture rather than in
+  `round_texts`, and the tool schema puts it at the top level rather than
+  inside `versions` — the shape is what makes a translated one unrepresentable.
+  It carries its own BCP 47 tag, which is the one thing on screen the lobby's
+  own language does not predict, so the UI can mark the lines with it instead
+  of reading English with a German voice. Null when the source did not give a
+  usable one, because marking it with a guess is worse than not marking it.
+
+**Guessing is looser than reading.** A lobby is shown its own language and is
+scored against every language the round holds — the others' answers and aliases
+ride along in the list `matchesAnswer` compares against, so a German room that
+types "France" has still named the thing on the screen. It is also why
+`lobby/matching.ts` folds `ß` to `ss` rather than letting it cost an edit
+against the keyboards that cannot type it.
 
 ## Architecture
 
@@ -268,7 +397,8 @@ and dies with it — deliberately, see Lobbies. The round bank persists: SQLite
 `RoundRepository` interface in `bank/repository.ts`, whose methods are async
 *because* the next implementation is Postgres — swapping it in is one new file,
 not a change to any caller. Nothing outside `bank/` knows which one is plugged
-in.
+in. Two tables: `rounds` is what was photographed and how often it has been
+dealt, `round_texts` is what each language asks and accepts about it.
 
 ## Web UI
 
@@ -336,6 +466,15 @@ laptop four minutes fast still renders a correct countdown. Timers tick on
 `requestAnimationFrame` (`components/game/use-server-clock.ts`), which is smooth
 for the bar and stops on its own in a background tab.
 
+**A toast is a transition, not a clock.** `desertedEndsAt` arriving where there
+was null is a game starting to count down to being called off, and it going away
+again is a reprieve or an obituary depending on the status beside it.
+`lib/desertion-notice.ts` decides which, purely, from the two snapshots either
+side — so the four outcomes are argued in a test rather than inside a socket
+callback — and `lobby-client.ts` owns the toast. Notices go there rather than
+into a component because the transition can land mid-navigation, and the
+connection is the only thing on this side that does not unmount.
+
 **Design system:** dark only, tokens in `app/globals.css` — read the comments
 there before touching a value, and run `pnpm test` after. The yellow `--primary`
 is the single call to action on a screen; `--brand-cyan` and `--brand-pink` are
@@ -364,6 +503,7 @@ interface Lobby {
   targetScore: number // host-set, default 100
   hostId: string
   topics: TopicId[]   // host-set, default all
+  language: LanguageId   // host-set, default 'en'; fixed for a whole game
   players: Map<string, Player>
   round: Round | null
   usedAnswers: string[]  // this game's answers, so a source can avoid repeats
@@ -380,7 +520,7 @@ interface Round {
   kind: RoundKind
   startsAt: number        // the countdown's zero
   endsAt: number | null   // startsAt + ROUND_DURATION_MS, once live
-  content: RoundContent | null   // { question, imageUrl } or { question, snippet }
+  content: RoundContent | null   // { question, imageUrl }, or { question, snippet, snippetLanguage }
   answer: string | null
   aliases: string[]
   // Who got it, and when. Public from the moment it exists — see Guessing.
@@ -409,6 +549,8 @@ input is uppercased.
 - If the host drops, the longest-present remaining player is promoted immediately,
   so one flaky connection cannot freeze everyone. A returning host does not take
   it back.
+- Taking a running game below `MIN_PLAYERS_TO_START` ends it — at once if you
+  left, after `DESERTED_GAME_GRACE_MS` if you only dropped. See Winning.
 - A sweep every 60s deletes lobbies with nobody connected for 5 minutes, and any
   lobby idle for an hour.
 
@@ -426,7 +568,10 @@ Grace periods differ by phase on purpose:
 
 - **Before the game starts** — a disconnected player is dropped after 60s.
 - **Once a game is running** — the seat is held until the game ends. Losing a
-  player's score because their phone slept is worse than a greyed-out row.
+  player's score because their phone slept is worse than a greyed-out row. What
+  a long drop can end is the *game*, not the seat: if it leaves too few players
+  connected to play, the game is called off 30s later and everybody keeps their
+  score — see Winning.
 
 ## Realtime Protocol
 
@@ -443,11 +588,12 @@ type Ack<T> =
 
 | Event | Payload | Ack |
 |---|---|---|
-| `lobby:create` | `{ nickname, targetScore, topics }` | `{ code, playerId, resumeToken, state }` |
+| `lobby:create` | `{ nickname, targetScore, topics, language }` | `{ code, playerId, resumeToken, state }` |
 | `lobby:join` | `{ code, nickname }` | `{ playerId, resumeToken, state }` |
 | `lobby:resume` | `{ code, playerId, resumeToken }` | `{ state }` |
 | `lobby:setTarget` | `{ targetScore }` — host only | `{}` |
 | `lobby:setTopics` | `{ topics }` — host only, while `lobby` or `finished` | `{}` |
+| `lobby:setLanguage` | `{ language }` — host only, while `lobby` or `finished` | `{}` |
 | `lobby:start` | — host only | `{}` |
 | `round:guess` | `{ roundNumber, guess }` | `{ correct: false }` or `{ correct: true, points, elapsedMs }` |
 | `lobby:leave` | — | `{}` |
@@ -476,8 +622,8 @@ render their countdown from a server-sent deadline. Client timestamps are never
 trusted — speed is the score here.
 
 **Errors:** `LOBBY_NOT_FOUND`, `LOBBY_FULL`, `GAME_IN_PROGRESS`, `NICKNAME_TAKEN`,
-`INVALID_NICKNAME`, `INVALID_TARGET_SCORE`, `INVALID_TOPICS`, `NOT_HOST`,
-`NOT_ENOUGH_PLAYERS`, `ROUND_NOT_OPEN`, `ALREADY_ANSWERED`, `INVALID_GUESS`,
+`INVALID_NICKNAME`, `INVALID_TARGET_SCORE`, `INVALID_TOPICS`, `INVALID_LANGUAGE`,
+`NOT_HOST`, `NOT_ENOUGH_PLAYERS`, `ROUND_NOT_OPEN`, `ALREADY_ANSWERED`, `INVALID_GUESS`,
 `RATE_LIMITED`, `SERVER_ERROR`, and `RESUME_REJECTED` — on which the client
 clears `sessionStorage` and returns to the join screen rather than retrying
 forever.
@@ -488,17 +634,22 @@ per-socket cap of ~20 events/sec stops one spammer from wedging the event loop.
 ## Testing
 
 `LobbyStore` is a pure module — no sockets, no `Date.now()`. The clock is injected,
-and `create` / `join` / `resume` / `leave` / `start` / `disconnect` / `sweep` take
-and return plain data.
+and `create` / `join` / `resume` / `leave` / `start` / `disconnect` /
+`endIfDeserted` / `sweep` take and return plain data.
 
-That puts every rule above — host promotion, nickname collisions, both grace
-periods, the reaping sweep, the round's own state machine, and the scoring of a
-guess — under fast deterministic unit tests with a fake clock. `matching.ts` and
-`scoring.ts` are pure functions of their arguments and are tested on their own,
-which is where "would a player call this right?" is argued rather than in the
-store. A thin adapter maps socket events to
+That puts every rule above — host promotion, nickname collisions, the grace
+periods, the reaping sweep, the round's own state machine, when a game has run
+out of players, and the scoring of a guess — under fast deterministic unit tests
+with a fake clock. `matching.ts` and `scoring.ts` are pure functions of their
+arguments and are tested on their own, which is where "would a player call this
+right?" is argued rather than in the store. A thin adapter maps socket events to
 store calls; integration tests with a real Socket.IO client cover join → drop →
-resume and the error acks.
+resume, a game called off by a drop, and the error acks.
+
+`game/rounds.ts` has its own tests for the clocks the socket tests cannot wait
+out. They drive the runner against a real store and a source that never answers,
+with the desertion grace injected small — which is the only thing that knob
+exists for.
 
 **No game logic in the socket handlers.**
 
@@ -526,13 +677,17 @@ These are deliberately not decided yet. Ask before assuming an answer:
   repeat now means the topic's whole shelf has been dealt — softened, not
   eliminated, and the honest fix is a deeper pool, which grows with play.
   Whether a *lobby* should also remember what it saw last game is undecided.
-- **The results screen** — `/<CODE>/results` is a blank page. Final standings and
-  a rematch on the same lobby (which needs scores reset and `start` opened up
+- **The results screen** — `/<CODE>/results` is a blank page, with a toast the
+  only thing that says why a called-off game ended. Final standings and a
+  rematch on the same lobby (which needs scores reset and `start` opened up
   from `finished`) are unbuilt.
-- **An empty room keeps playing** — if every player drops mid-game the chain
-  goes on drawing rounds until the empty-lobby sweep reaps the lobby five
-  minutes later. Bank draws are free, so the cost is now at most a few top-up
-  generations rather than a dozen model calls.
+- **Nothing backfills a language added later.** A new entry in the catalogue is
+  all the schema, the tool and the UI need — but every round already banked was
+  written without it, and `draw` passes those over, so the new language starts
+  on an empty shelf and fills only as it is played. A backfill pass that asked
+  the generator for the missing entry of a round it already has the picture for
+  would be cheap and is unwritten; whether it is worth writing depends on how
+  often a language is added, which is so far never.
 - **The bank has no curator** — nothing retires a round nobody solves, nothing
   turns near-miss guesses into aliases, and nothing but the low-water mark
   decides how deep a topic's pool should be. The play data to drive all three

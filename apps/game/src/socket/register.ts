@@ -22,6 +22,7 @@ import {
   parseGuess,
   parseJoin,
   parseResume,
+  parseSetLanguage,
   parseSetTarget,
   parseSetTopics,
 } from "./validate.js";
@@ -107,10 +108,26 @@ export function registerSocketHandlers(
   const releaseSeat = (socket: GameSocket): void => {
     const seat = detachSeat(socket);
     if (!seat) return;
-    broadcast(store.leave(seat.lobbyCode, seat.playerId));
-    // The store drops a lobby the moment its last seat does. There is nothing
-    // left to build a round for, and the request in flight is now pointless.
-    if (store.snapshot(seat.lobbyCode) === null) runner.cancel(seat.lobbyCode);
+
+    const left = store.leave(seat.lobbyCode, seat.playerId);
+    broadcast(left);
+
+    // The store drops a lobby the moment its last seat does, and finishes a
+    // game the moment the second-to-last one does. Either way what is in
+    // flight — a countdown, a request to the source, a round's clock — is for a
+    // game nobody is playing, so it is dropped rather than left to time out
+    // against a store that will refuse it anyway.
+    //
+    // Null is re-read rather than trusted: it also means "that player was not
+    // in that lobby", which must not cancel a game still being played.
+    const remaining = left ?? store.snapshot(seat.lobbyCode);
+    if (remaining === null || remaining.status === "finished") {
+      runner.cancel(seat.lobbyCode);
+      return;
+    }
+    // Still a game, but a seat fewer. If what is left cannot field one, the
+    // grace starts now.
+    runner.rosterChanged(seat.lobbyCode);
   };
 
   const requireSeat = (socket: GameSocket): Ack<Seat> => {
@@ -193,6 +210,9 @@ export function registerSocketHandlers(
           playerId: parsed.data.playerId,
         });
         broadcast(resumed.data.state);
+        // Somebody is back. Whatever grace was counting down on this lobby is
+        // restarted, and the store will find it has a game again.
+        runner.rosterChanged(resumed.data.state.code);
         return resumed;
       }),
     );
@@ -218,6 +238,19 @@ export function registerSocketHandlers(
         if (!parsed.ok) return parsed;
 
         const result = store.setTopics(seat.data.lobbyCode, seat.data.playerId, parsed.data.topics);
+        if (result.ok) broadcast(store.snapshot(seat.data.lobbyCode));
+        return result;
+      }),
+    );
+
+    socket.on("lobby:setLanguage", (payload, ack) =>
+      run<Record<string, never>>(ack, limiter, () => {
+        const seat = requireSeat(socket);
+        if (!seat.ok) return seat;
+        const parsed = parseSetLanguage(payload);
+        if (!parsed.ok) return parsed;
+
+        const result = store.setLanguage(seat.data.lobbyCode, seat.data.playerId, parsed.data.language);
         if (result.ok) broadcast(store.snapshot(seat.data.lobbyCode));
         return result;
       }),
@@ -283,6 +316,10 @@ export function registerSocketHandlers(
 
       seats.delete(key);
       broadcast(store.disconnect(lobbyCode, playerId));
+      // The seat is held — a drop is not a departure — but a game nobody is
+      // left to play is still over. This starts the clock on that; coming back
+      // before it runs out costs nothing.
+      runner.rosterChanged(lobbyCode);
     });
   });
 

@@ -1,3 +1,4 @@
+import type { LanguageId } from "./languages.js";
 import type { RoundState } from "./round.js";
 import type { TopicId } from "./topics.js";
 
@@ -13,6 +14,16 @@ export type LobbyStatus =
   | "in_round"
   | "intermission"
   | "finished";
+
+/**
+ * Is a game actually being *played*, as opposed to set up or over?
+ *
+ * Both sides ask it and neither should spell it out: the server, to decide
+ * whether a room has run out of players to play with, and the client, to decide
+ * whether that is worth warning anybody about.
+ */
+export const isPlaying = (status: LobbyStatus): boolean =>
+  status === "countdown" || status === "in_round" || status === "intermission";
 
 export interface Player {
   /** Server-issued; this is the seat identity. */
@@ -38,9 +49,25 @@ export interface LobbyState {
    * and public because every player is entitled to know what they are in for.
    */
   topics: TopicId[];
+  /**
+   * What language the rounds are written in. Public for the same reason the
+   * topics are: it decides what everybody will be asked to type, and a player
+   * is entitled to know that before the countdown rather than after it.
+   */
+  language: LanguageId;
   players: Player[];
   /** Null while the lobby is being set up rather than played. */
   round: RoundState | null;
+  /**
+   * When a game the room has emptied out of will be called off, or null while
+   * there are still enough players to play it.
+   *
+   * Stamped against `serverNow` like every other deadline here, so a client
+   * renders the wait rather than timing it — and so the warning it puts on
+   * screen comes from the server's decision instead of a guess assembled from
+   * who happens to look absent in this snapshot.
+   */
+  desertedEndsAt: number | null;
   /**
    * The server's clock at the instant this snapshot was built.
    *

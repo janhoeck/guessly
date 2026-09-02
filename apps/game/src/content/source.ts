@@ -1,4 +1,4 @@
-import type { RoundContent, RoundKind, TopicId } from "@guessly/protocol";
+import type { LanguageId, RoundContent, RoundKind, TopicId } from "@guessly/protocol";
 import type { RoundRequest } from "../lobby/store.js";
 import type { DownloadedImage } from "./download.js";
 
@@ -6,6 +6,12 @@ import type { DownloadedImage } from "./download.js";
 export interface SourcedRound {
   content: RoundContent;
   answer: string;
+  /**
+   * Everything else that counts as right — and that now spans languages. The
+   * lobby reads its own question and is shown its own answer, but a player who
+   * types "France" at a German round has still named the thing on screen, so
+   * the other languages' answers and aliases are in here too.
+   */
   aliases: string[];
   /** For the server log. Never broadcast. */
   subject: string;
@@ -23,23 +29,41 @@ export interface RoundContentSource {
 }
 
 /**
- * What a generator is asked for. A game's `RoundRequest` satisfies it as-is;
- * the bank's background refill builds one of these without pretending to have
- * a lobby code or a countdown.
+ * What a generator is asked for.
+ *
+ * A game's `RoundRequest` names the one language its lobby plays in; this names
+ * *every* language the round is to be written in. One subject and one picture
+ * serve all of them, so asking once and asking for everything is the difference
+ * between paying for one search, one download and one cached prompt and paying
+ * for as many of each as there are languages.
  */
 export interface GenerationRequest {
   topic: TopicId;
   kind: RoundKind;
   number: number;
-  /** Answers that must not be produced again. */
+  /** Write the round in each of these. Never empty. */
+  languages: readonly LanguageId[];
+  /** Answers that must not be produced again, in any language. */
   exclude: readonly string[];
 }
 
-interface GeneratedRoundBase {
+/** One round as one language reads it. */
+export interface GeneratedText {
   question: string;
   answer: string;
   aliases: string[];
+}
+
+/**
+ * Every language a generated round was written in. Partial because the type
+ * cannot know which were asked for; `parseSubmission` is what insists that the
+ * ones asked for are the ones that came back.
+ */
+export type GeneratedTexts = Partial<Record<LanguageId, GeneratedText>>;
+
+interface GeneratedRoundBase {
   subject: string;
+  texts: GeneratedTexts;
 }
 
 /**
@@ -49,7 +73,18 @@ interface GeneratedRoundBase {
  */
 export type GeneratedRound =
   | (GeneratedRoundBase & { kind: "image"; image: DownloadedImage })
-  | (GeneratedRoundBase & { kind: "lyrics"; snippet: string });
+  | (GeneratedRoundBase & {
+      kind: "lyrics";
+      /**
+       * One paraphrase for every room, written in the *song's* language. It
+       * sits out here beside the picture rather than inside `texts` for the
+       * same reason the picture does: it is what the round shows, and what it
+       * shows does not change with who is looking.
+       */
+      snippet: string;
+      /** Its BCP 47 tag, or null when the source did not give a usable one. */
+      snippetLanguage: string | null;
+    });
 
 /**
  * The production side of the seam. `RoundContentSource` is what the *game*

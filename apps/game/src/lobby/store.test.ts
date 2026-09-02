@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   COUNTDOWN_DURATION_MS,
+  DESERTED_GAME_GRACE_MS,
   EMPTY_LOBBY_TTL_MS,
   IDLE_LOBBY_TTL_MS,
   INTERMISSION_DURATION_MS,
   LOBBY_DISCONNECT_GRACE_MS,
   MAX_PLAYERS_PER_LOBBY,
   ALL_TOPIC_IDS,
+  DEFAULT_LANGUAGE,
   MAX_TARGET_SCORE,
   MIN_TARGET_SCORE,
   ROUND_DURATION_MS,
@@ -15,6 +17,7 @@ import {
   type Ack,
   type CreateLobbyPayload,
   type ErrorCode,
+  type LanguageId,
   type RoundContent,
   type TopicId,
 } from "@guessly/protocol";
@@ -64,7 +67,13 @@ const A_PICTURE: RoundContent = {
  * required field is one edit here rather than one per call site.
  */
 function creating(overrides: Partial<CreateLobbyPayload> = {}): CreateLobbyPayload {
-  return { nickname: "jan", targetScore: 100, topics: [...ALL_TOPIC_IDS], ...overrides };
+  return {
+    nickname: "jan",
+    targetScore: 100,
+    topics: [...ALL_TOPIC_IDS],
+    language: DEFAULT_LANGUAGE,
+    ...overrides,
+  };
 }
 
 function unwrap<T>(result: Ack<T>): T {
@@ -97,6 +106,7 @@ describe("create", () => {
     expect(created.state.status).toBe("lobby");
     expect(created.state.targetScore).toBe(100);
     expect(created.state.topics).toEqual([...ALL_TOPIC_IDS]);
+    expect(created.state.language).toBe("en");
     expect(created.state.players).toEqual([
       { id: created.playerId, nickname: "jan", score: 0, connected: true, disconnectedAt: null },
     ]);
@@ -323,6 +333,54 @@ describe("setTopics", () => {
   it.todo("allows a re-pick once a game has been won");
 });
 
+describe("setLanguage", () => {
+  it("lets the host change what the rounds will be written in", () => {
+    const { store, code, host } = lobbyOf(2);
+    unwrap(store.setLanguage(code, host.playerId, "de"));
+    expect(store.snapshot(code)?.language).toBe("de");
+  });
+
+  it("carries the choice through every round of the game", () => {
+    const { store, code, host, advance } = lobbyOf(2);
+    unwrap(store.setLanguage(code, host.playerId, "de"));
+    unwrap(store.start(code, host.playerId));
+
+    advance(COUNTDOWN_DURATION_MS);
+    store.deliverRound(code, 1, A_PICTURE, "Bhutan", []);
+    expect(store.prepareNext(code, 1)?.language).toBe("de");
+
+    advance(ROUND_DURATION_MS);
+    store.revealRound(code, 1);
+    advance(INTERMISSION_DURATION_MS);
+    const advanced = store.advance(code, 1);
+    if (advanced?.kind !== "next") throw new Error("expected another round");
+    expect(advanced.request.language).toBe("de");
+  });
+
+  it("refuses anybody else", () => {
+    const { store, code, joiners } = lobbyOf(2);
+    expect(failure(store.setLanguage(code, joiners[0]!.playerId, "de"))).toBe("NOT_HOST");
+  });
+
+  it("refuses a language nobody speaks here", () => {
+    const { store, code, host } = lobbyOf(2);
+    const language = "elvish" as unknown as LanguageId;
+    expect(failure(store.setLanguage(code, host.playerId, language))).toBe("INVALID_LANGUAGE");
+    expect(store.snapshot(code)?.language).toBe("en");
+  });
+
+  /**
+   * Harder than symmetry with the topics: the round in flight holds an answer
+   * and a list of aliases written in one language, and a switch underneath it
+   * would leave the matcher comparing German typing to an English answer.
+   */
+  it("refuses once the game is running", () => {
+    const { store, code, host } = lobbyOf(2);
+    unwrap(store.start(code, host.playerId));
+    expect(failure(store.setLanguage(code, host.playerId, "de"))).toBe("GAME_IN_PROGRESS");
+  });
+});
+
 describe("start", () => {
   it("opens a countdown rather than a round, with nothing to look at yet", () => {
     const { store, code, host } = lobbyOf(2);
@@ -342,6 +400,7 @@ describe("start", () => {
   it("hands back what the content source needs, drawn from the lobby's own topics", () => {
     const { store, code, host, pickTopicAt } = lobbyOf(2);
     unwrap(store.setTopics(code, host.playerId, ["music", "flags"]));
+    unwrap(store.setLanguage(code, host.playerId, "de"));
     // Catalogue order, not click order: flags comes first.
     pickTopicAt(1);
 
@@ -351,6 +410,7 @@ describe("start", () => {
       number: 1,
       topic: "music",
       kind: "lyrics",
+      language: "de",
       exclude: [],
       startsAt: NOON + COUNTDOWN_DURATION_MS,
     });
@@ -757,6 +817,10 @@ describe("prefetching the next round", () => {
       code,
       number: 2,
       topic: ALL_TOPIC_IDS[1],
+      // The prefetch has to be about the round that opens, in the language it
+      // will open in — content fetched in the wrong one would be dealt out
+      // silently, because nothing downstream checks.
+      language: "en",
       // Bhutan is not in usedAnswers until the reveal, but serving it again
       // next round would still be serving it twice.
       exclude: ["Bhutan"],
@@ -830,6 +894,248 @@ describe("leave", () => {
     const { store, code } = lobbyOf(2);
     expect(store.leave(code, "ghost")).toBeNull();
     expect(store.snapshot(code)?.players).toHaveLength(2);
+  });
+
+  it("leaves a lobby nobody has started alone", () => {
+    const { store, code, joiners } = lobbyOf(2);
+    expect(store.leave(code, joiners[0]!.playerId)?.status).toBe("lobby");
+  });
+});
+
+describe("a game left with one player", () => {
+  /** A three-player game with round one live and guessing open. */
+  function playingThree() {
+    const harness = lobbyOf(3);
+    const request = unwrap(harness.store.start(harness.code, harness.host.playerId));
+    harness.advance(COUNTDOWN_DURATION_MS);
+    harness.store.deliverRound(harness.code, request.number, A_PICTURE, "Bhutan", []);
+    return harness;
+  }
+
+  it("ends, rather than dealing the last player rounds to answer alone", () => {
+    const { store, code, joiners } = playing();
+    const state = store.leave(code, joiners[0]!.playerId);
+
+    expect(state?.status).toBe("finished");
+    // The round on screen went with the game: a finished lobby must not carry
+    // a running clock and a question nobody can be scored for.
+    expect(state?.round).toBeNull();
+  });
+
+  it("leaves the standings where the game got to", () => {
+    const { store, code, host, joiners } = playing();
+    store.guess(code, host.playerId, 1, "Bhutan");
+
+    const state = store.leave(code, joiners[0]!.playerId);
+    expect(state?.status).toBe("finished");
+    expect(state?.players).toHaveLength(1);
+    expect(state?.players[0]).toMatchObject({ id: host.playerId, score: ROUND_MAX_POINTS });
+  });
+
+  it("ends a game still on its countdown, before there is anything to look at", () => {
+    const { store, code, joiners } = counting();
+    expect(store.leave(code, joiners[0]!.playerId)?.status).toBe("finished");
+  });
+
+  it("ends a game sitting in its intermission", () => {
+    const { store, code, joiners, advance } = playing();
+    advance(ROUND_DURATION_MS);
+    store.revealRound(code, 1);
+
+    expect(store.leave(code, joiners[0]!.playerId)?.status).toBe("finished");
+  });
+
+  it("refuses the guesses of the round it interrupted", () => {
+    const { store, code, host, joiners } = playing();
+    store.leave(code, joiners[0]!.playerId);
+    expect(failure(store.guess(code, host.playerId, 1, "Bhutan").ack)).toBe("ROUND_NOT_OPEN");
+  });
+
+  it("plays on while two are still in", () => {
+    const { store, code, joiners } = playingThree();
+    const state = store.leave(code, joiners[0]!.playerId);
+
+    expect(state?.status).toBe("in_round");
+    expect(state?.players).toHaveLength(2);
+  });
+
+  it("does not end on the drop itself, which is a departure only once it lasts", () => {
+    const { store, code, joiners } = playing();
+    store.disconnect(code, joiners[0]!.playerId);
+    // The seat is still held and the round is still being played. What ends
+    // this game is `endIfDeserted`, once the caller has waited out the grace.
+    expect(store.snapshot(code)?.status).toBe("in_round");
+    expect(store.snapshot(code)?.players).toHaveLength(2);
+  });
+});
+
+describe("a game the room has emptied out of", () => {
+  it("ends once the grace is up and the dropped player is still away", () => {
+    const { store, code, joiners } = playing();
+    store.disconnect(code, joiners[0]!.playerId);
+
+    const state = store.endIfDeserted(code);
+    expect(state?.status).toBe("finished");
+    expect(state?.round).toBeNull();
+    // The seat and its score are still on the board; it is the game that ended,
+    // not the player who was dropped from it.
+    expect(state?.players).toHaveLength(2);
+  });
+
+  it("leaves a game everybody is still in alone", () => {
+    const { store, code } = playing();
+    expect(store.endIfDeserted(code)).toBeNull();
+    expect(store.snapshot(code)?.status).toBe("in_round");
+  });
+
+  it("leaves a game somebody came back to alone", () => {
+    const { store, code, joiners } = playing();
+    store.disconnect(code, joiners[0]!.playerId);
+    unwrap(
+      store.resume({
+        code,
+        playerId: joiners[0]!.playerId,
+        resumeToken: joiners[0]!.resumeToken,
+      }),
+    );
+
+    expect(store.endIfDeserted(code)).toBeNull();
+    expect(store.snapshot(code)?.status).toBe("in_round");
+  });
+
+  it("plays on while two are still connected", () => {
+    const harness = lobbyOf(3);
+    const request = unwrap(harness.store.start(harness.code, harness.host.playerId));
+    harness.advance(COUNTDOWN_DURATION_MS);
+    harness.store.deliverRound(harness.code, request.number, A_PICTURE, "Bhutan", []);
+    harness.store.disconnect(harness.code, harness.joiners[0]!.playerId);
+
+    expect(harness.store.endIfDeserted(harness.code)).toBeNull();
+    expect(harness.store.snapshot(harness.code)?.status).toBe("in_round");
+  });
+
+  it("ends a game still on its countdown", () => {
+    const { store, code, joiners } = counting();
+    store.disconnect(code, joiners[0]!.playerId);
+    expect(store.endIfDeserted(code)?.status).toBe("finished");
+  });
+
+  it("has nothing to end in a lobby nobody has started", () => {
+    const { store, code, joiners } = lobbyOf(2);
+    store.disconnect(code, joiners[0]!.playerId);
+    // Sitting alone in a lobby is not a game running out of players; the
+    // pre-game grace and the sweep own that seat.
+    expect(store.endIfDeserted(code)).toBeNull();
+    expect(store.snapshot(code)?.status).toBe("lobby");
+  });
+
+  it("has nothing to end in a game that is already over", () => {
+    const { store, code, joiners } = playing();
+    store.disconnect(code, joiners[0]!.playerId);
+    expect(store.endIfDeserted(code)?.status).toBe("finished");
+    expect(store.endIfDeserted(code)).toBeNull();
+  });
+
+  it("is null for a lobby that is gone", () => {
+    const { store } = lobbyOf(2);
+    expect(store.endIfDeserted("NOPE1")).toBeNull();
+  });
+});
+
+describe("the deadline a short-handed game counts down to", () => {
+  it("is stamped on the drop that empties the room, and goes out to everybody", () => {
+    const { store, code, joiners } = playing();
+    expect(store.snapshot(code)?.desertedEndsAt).toBeNull();
+
+    const state = store.disconnect(code, joiners[0]!.playerId);
+    expect(state?.desertedEndsAt).toBe(NOON + COUNTDOWN_DURATION_MS + DESERTED_GAME_GRACE_MS);
+  });
+
+  it("is cleared the moment somebody comes back", () => {
+    const { store, code, joiners } = playing();
+    store.disconnect(code, joiners[0]!.playerId);
+
+    const state = unwrap(
+      store.resume({
+        code,
+        playerId: joiners[0]!.playerId,
+        resumeToken: joiners[0]!.resumeToken,
+      }),
+    ).state;
+    expect(state.desertedEndsAt).toBeNull();
+  });
+
+  it("is held rather than restamped while the room stays too small", () => {
+    const harness = lobbyOf(3);
+    const request = unwrap(harness.store.start(harness.code, harness.host.playerId));
+    harness.advance(COUNTDOWN_DURATION_MS);
+    harness.store.deliverRound(harness.code, request.number, A_PICTURE, "Bhutan", []);
+
+    const stamped = harness.store.disconnect(harness.code, harness.joiners[0]!.playerId);
+    // Three players, so the first drop still leaves a game. Nothing to count.
+    expect(stamped?.desertedEndsAt).toBeNull();
+
+    harness.store.disconnect(harness.code, harness.joiners[1]!.playerId);
+    const deadline = harness.store.snapshot(harness.code)?.desertedEndsAt;
+    expect(deadline).toBe(NOON + COUNTDOWN_DURATION_MS + DESERTED_GAME_GRACE_MS);
+
+    // A third player dropping is not a reason to give the second one longer;
+    // a deadline that moved would render as a countdown running backwards.
+    harness.advance(5_000);
+    harness.store.disconnect(harness.code, harness.host.playerId);
+    expect(harness.store.snapshot(harness.code)?.desertedEndsAt).toBe(deadline);
+  });
+
+  it("survives the round boundary it is counting through", () => {
+    const { store, code, joiners, advance } = playing();
+    const deadline = store.disconnect(code, joiners[0]!.playerId)?.desertedEndsAt;
+
+    advance(ROUND_DURATION_MS);
+    store.revealRound(code, 1);
+    advance(INTERMISSION_DURATION_MS);
+    const advanced = store.advance(code, 1);
+
+    // Round two opened with one player still away, and the deadline it was
+    // already counting down to is the one that still applies.
+    expect(advanced?.state.desertedEndsAt).toBe(deadline);
+  });
+
+  it("is not counted in a lobby nobody has started", () => {
+    const { store, code, joiners } = lobbyOf(2);
+    expect(store.disconnect(code, joiners[0]!.playerId)?.desertedEndsAt).toBeNull();
+  });
+
+  it("is not counted in a game that has been won", () => {
+    const harness = lobbyOf(2);
+    const { store, code, host, joiners, advance } = harness;
+    // Low enough that one instant answer wins it, and set before kick-off
+    // because the target is a lobby decision.
+    unwrap(store.setTarget(code, host.playerId, MIN_TARGET_SCORE));
+    const request = unwrap(store.start(code, host.playerId));
+    advance(COUNTDOWN_DURATION_MS);
+    store.deliverRound(code, request.number, A_PICTURE, "Bhutan", []);
+    store.disconnect(code, joiners[0]!.playerId);
+
+    // The last player standing gets there before the grace does. The game is
+    // over for the better reason, and must not go out still counting down.
+    for (let round = 1; round * ROUND_MAX_POINTS < MIN_TARGET_SCORE; round += 1) {
+      store.guess(code, host.playerId, round, "Bhutan");
+      advance(ROUND_DURATION_MS);
+      store.revealRound(code, round);
+      advance(INTERMISSION_DURATION_MS);
+      const next = store.advance(code, round);
+      if (next?.kind !== "next") throw new Error("expected another round");
+      store.deliverRound(code, round + 1, A_PICTURE, "Bhutan", []);
+    }
+    const won = Math.ceil(MIN_TARGET_SCORE / ROUND_MAX_POINTS);
+    store.guess(code, host.playerId, won, "Bhutan");
+    advance(ROUND_DURATION_MS);
+    store.revealRound(code, won);
+    advance(INTERMISSION_DURATION_MS);
+    const advanced = store.advance(code, won);
+
+    expect(advanced?.kind).toBe("finished");
+    expect(advanced?.state.desertedEndsAt).toBeNull();
   });
 });
 

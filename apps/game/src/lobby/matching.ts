@@ -3,8 +3,8 @@
  *
  * Two layers, and they answer different complaints. Normalising handles the
  * ways a player can be *right* while typing something that is not
- * character-for-character the answer — capitals, accents, punctuation, a
- * leading "the", a double space. Edit distance handles the way a player can be
+ * character-for-character the answer — capitals, accents, German's ß,
+ * punctuation, a leading "the", a double space. Edit distance handles the way a player can be
  * right and still miss the keys, which under a twenty second clock is most of
  * them.
  *
@@ -31,6 +31,14 @@ const COMBINING_MARKS = /\p{M}+/gu;
 const NOT_ALPHANUMERIC = /[^\p{L}\p{N}]+/gu;
 
 /**
+ * German's one letter that is really two. NFD leaves it alone — it has no
+ * decomposition — so "Fussball" would otherwise cost an edit against
+ * "Fußball" and "Weisse Rose" two against "Weiße Rose", which is the whole
+ * budget spent on a key half of Germany does not have.
+ */
+const SHARP_S = /ß/gu;
+
+/**
  * Stripped from both sides, so "The Beatles" and "beatles" meet in the middle.
  * Only the front: "Lord of the Rings" keeps its middle "the", which is doing
  * real work there.
@@ -42,6 +50,7 @@ export function normalize(text: string): string {
     .normalize("NFD")
     .replace(COMBINING_MARKS, "")
     .toLowerCase()
+    .replace(SHARP_S, "ss")
     // Before punctuation is stripped, or "Ben & Jerry's" and "Ben and Jerry's"
     // would normalise to two different things.
     .replace(/&/gu, " and ")

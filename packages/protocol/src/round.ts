@@ -23,7 +23,22 @@ interface RoundContentBase {
 
 export type RoundContent =
   | (RoundContentBase & { kind: "image"; imageUrl: string })
-  | (RoundContentBase & { kind: "lyrics"; snippet: string });
+  | (RoundContentBase & {
+      kind: "lyrics";
+      snippet: string;
+      /**
+       * The language the paraphrase is written in, as a BCP 47 tag, or null
+       * when the source did not say.
+       *
+       * It is the *song's* language and not the lobby's — a German room naming
+       * an English song reads English, because half of what makes a lyric
+       * recognisable is the language it is in. That makes it the one thing on
+       * screen whose language the lobby's own setting does not predict, which
+       * is why it rides here: the UI marks the snippet with it so a screen
+       * reader does not read English lyrics with a German voice.
+       */
+      snippetLanguage: string | null;
+    });
 
 /**
  * One player's round, once they have got it right.

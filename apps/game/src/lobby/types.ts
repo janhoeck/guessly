@@ -1,12 +1,14 @@
-import type {
-  LobbyState,
-  LobbyStatus,
-  Player,
-  RoundContent,
-  RoundKind,
-  RoundResult,
-  RoundState,
-  TopicId,
+import {
+  isPlaying,
+  type LanguageId,
+  type LobbyState,
+  type LobbyStatus,
+  type Player,
+  type RoundContent,
+  type RoundKind,
+  type RoundResult,
+  type RoundState,
+  type TopicId,
 } from "@guessly/protocol";
 
 /**
@@ -68,6 +70,8 @@ export interface LobbyRecord {
   hostId: string;
   /** Normalised on the way in: deduplicated and in catalogue order. */
   topics: TopicId[];
+  /** What language the rounds are written in. Fixed for the length of a game. */
+  language: LanguageId;
   /** Insertion ordered, and never re-inserted, so this is join order. */
   players: Map<string, PlayerRecord>;
   round: RoundRecord | null;
@@ -76,6 +80,13 @@ export interface LobbyRecord {
    * source so it does not serve the same flag twice in one sitting.
    */
   usedAnswers: string[];
+  /**
+   * When this game will be called off for want of players, or null while the
+   * room can still field one. Stamped the moment the room drops below what a
+   * game needs and held — not restamped — for as long as it stays there, so a
+   * second player dropping does not hand the room another thirty seconds.
+   */
+  desertedEndsAt: number | null;
   createdAt: number;
   lastActivityAt: number;
 }
@@ -121,6 +132,7 @@ export function toLobbyState(lobby: LobbyRecord, now: number): LobbyState {
     // Copied, not shared: a snapshot handed to the wire must not be a handle
     // on the live lobby's array.
     topics: [...lobby.topics],
+    language: lobby.language,
     players: [...lobby.players.values()].map((player) => ({
       id: player.id,
       nickname: player.nickname,
@@ -129,6 +141,10 @@ export function toLobbyState(lobby: LobbyRecord, now: number): LobbyState {
       disconnectedAt: player.disconnectedAt,
     })),
     round: toRoundState(lobby.round),
+    // Guarded by the status rather than trusted from the field: a game that was
+    // short-handed and then *won* on the last player's guess is over for the
+    // better reason, and must not go out still counting down to the other one.
+    desertedEndsAt: isPlaying(lobby.status) ? lobby.desertedEndsAt : null,
     serverNow: now,
   };
 }

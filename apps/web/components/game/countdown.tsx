@@ -1,8 +1,10 @@
 "use client"
 
+import * as React from "react"
 import { topicById, type RoundState } from "@guessly/protocol"
 
 import { useServerClock } from "@/components/game/use-server-clock"
+import { playSound } from "@/lib/sounds"
 
 /**
  * Three, two, one.
@@ -21,6 +23,23 @@ function Countdown({ round }: { round: RoundState }) {
   const remaining = round.startsAt - now
   const seconds = Math.ceil(remaining / 1000)
   const topic = topicById(round.topic)
+
+  /**
+   * A tick for each number, one GO at zero. Keyed on the displayed second, so
+   * the sound and the pulse are the same event — including the first tick,
+   * which plays on mount because that is what the 3 appearing is. GO only
+   * plays on the 1 → 0 transition: a tab that arrives after zero (a reload,
+   * a late round) shows the wait, and a fanfare over "finding something
+   * good…" would be a lie.
+   */
+  const lastSecond = React.useRef<number | null>(null)
+  React.useEffect(() => {
+    const previous = lastSecond.current
+    if (previous === seconds) return
+    lastSecond.current = seconds
+    if (seconds > 0) playSound("tick")
+    else if (previous !== null && previous > 0) playSound("go")
+  }, [seconds])
 
   return (
     <section className="grid flex-1 place-items-center rounded-xl bg-card p-8 ring-1 ring-foreground/10">

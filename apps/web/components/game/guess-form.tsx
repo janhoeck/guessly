@@ -6,6 +6,7 @@ import { GUESS_MAX_LENGTH, type RoundResult } from "@guessly/protocol"
 import type { GuessOutcome } from "@/components/lobby/use-lobby"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { playSound } from "@/lib/sounds"
 import { cn } from "@/lib/utils"
 
 /**
@@ -84,11 +85,18 @@ function GuessForm({
     setInFlight(true)
     onGuess(roundNumber, value, (outcome) => {
       setInFlight(false)
-      // Right, or never answered at all. The snapshot disables the field in the
-      // first case and the round is gone in the second; either way there is
-      // nothing here to clear.
-      if (!outcome || outcome.correct) return
+      // Never answered at all — the round is gone, and a verdict sound for a
+      // guess that was not judged would be one of the two lies available here.
+      if (!outcome) return
 
+      // Right. The snapshot locks the field; nothing here to clear.
+      if (outcome.correct) {
+        playSound("correct")
+        return
+      }
+
+      // The sound and the shake are the same "no", said once, to one person.
+      playSound("wrong")
       setText("")
       setMissed(value)
       if (field.current) shake(field.current)

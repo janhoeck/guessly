@@ -235,8 +235,25 @@ target when creating the lobby; the default is **100 points**.
 The check happens when the *intermission* ends, not at the reveal, so the round
 somebody won on still gets its beat: the answer goes up, the scores settle, and
 only then is the game over. The lobby moves to `finished` and every client
-navigates to `/<CODE>/results` — **which is deliberately a blank page for now.**
-The winner screen and a rematch on the same lobby are the next piece of work.
+navigates to `/<CODE>/results`: the winner named over the standings — or the
+game declared called off, because crowning whoever happened to be ahead of a
+game nobody finished would be a lie — with ties sharing a rank, and a draw at
+the top of a won game called a draw.
+
+**`finished` is a setup phase, and the results screen is where the next game
+is set up.** The server holds every host power open in `finished` exactly as
+in `lobby` — topics, language, target score, and `start` itself — so the page
+shows the same three controls the lobby modal does, wired to the same events.
+**Play again** is a plain `lobby:start`: every score is reset to zero, the
+game's `usedAnswers` are cleared (a rematch is a new game; across games it is
+the bank's rotation that softens repeats), and round one's countdown opens.
+Every results screen in the room notices the status leave `finished` and
+navigates back to `/<CODE>`, the same way the first start moved everybody
+there. The reset lives in `start` unconditionally rather than on a rematch
+branch, so a game abandoned by a failed build cannot carry half a scoreboard
+into the next attempt either. The seats, though, stay as they are: joining is
+still only allowed while status is `lobby`, so a rematch is played by whoever
+held a seat when the game ended.
 
 **A game can also simply run out of players.** Reaching the target is the way a
 game is *won*; it is not the only way one ends. A party game needs a party, so a
@@ -299,9 +316,9 @@ is required, and the stored list is deduplicated and kept in catalogue order, so
 two identical selections are literally equal however they were clicked.
 
 The host picks in the lobby modal, and may re-pick while the lobby is being set
-up — before the first round, or after a winner, ready for the next game — but
-never mid-game. Within a game, the topic for each round is still drawn at random
-from the selection.
+up — before the first round, or on the results screen after a game has ended,
+ready for the next one — but never mid-game. Within a game, the topic for each
+round is still drawn at random from the selection.
 
 IDs are wire format and never change. Labels and hints are copy and may.
 
@@ -318,7 +335,7 @@ screen reader does not read German with an English voice.
 
 Every lobby stores its own, defaulting to English. The host picks it in the
 lobby modal beside the topics, and — like the topics — may re-pick before the
-first round or after a winner but never mid-game: a game's `usedAnswers` are in
+first round or after a game has ended but never mid-game: a game's `usedAnswers` are in
 one language and the next round is already being fetched in it, so a switch
 halfway through would orphan the prefetch and hand the exclusion list a
 language it no longer speaks.
@@ -462,7 +479,14 @@ reader.
 drift away from what the server does.
 
 **A finished game is its own route.** `/<CODE>` resolves five possibilities now,
-not four, and `finished` sends everybody to `/<CODE>/results`.
+not four, and `finished` sends everybody to `/<CODE>/results`, whose only
+island is `components/results/results-room.tsx`. It makes the same
+where-do-I-belong decision the game room makes, with one case swapped: a
+*playing* status is its cue to go back to `/<CODE>`, because that is what the
+host pressing Play again looks like from every other seat. The standings and
+the next-game panel render from the snapshot like everything else — the panel
+reuses the lobby modal's own controls, so a control gained in one place is
+gained in both.
 
 **The lobby is a modal; the game is a route.** A lobby is a room you are *in*,
 so it opens over the landing page from `components/landing/entry-form.tsx` —
@@ -512,6 +536,16 @@ there before touching a value, and run `pnpm test` after. The yellow `--primary`
 is the single call to action on a screen; `--brand-cyan` and `--brand-pink` are
 decorative only (rules, indicators, plates), never text and never a hover
 surface.
+
+**Sound is garnish, and one voice.** Four sounds — countdown tick, GO, right,
+wrong — all from one CC0 pack (Kenney's Interface Sounds, see
+`public/sounds/README.md`), so they read as a set rather than four apps
+talking at once. `lib/sounds.ts` owns playback: Web Audio for latency, the
+context unlocked on the first gesture anywhere because the countdown itself is
+not one, and `playSound` degrading to silence — never an error, never a queue
+— when audio is unavailable. A verdict sound plays only where the verdict is
+told: the wrong-sound rides the same one-person ack as the shake, so the room
+hears who scored and never who fumbled.
 
 ## Lobbies
 
@@ -623,10 +657,10 @@ type Ack<T> =
 | `lobby:create` | `{ nickname, targetScore, topics, language }` | `{ code, playerId, resumeToken, state }` |
 | `lobby:join` | `{ code, nickname }` | `{ playerId, resumeToken, state }` |
 | `lobby:resume` | `{ code, playerId, resumeToken }` | `{ state }` |
-| `lobby:setTarget` | `{ targetScore }` — host only | `{}` |
+| `lobby:setTarget` | `{ targetScore }` — host only, while `lobby` or `finished` | `{}` |
 | `lobby:setTopics` | `{ topics }` — host only, while `lobby` or `finished` | `{}` |
 | `lobby:setLanguage` | `{ language }` — host only, while `lobby` or `finished` | `{}` |
-| `lobby:start` | — host only | `{}` |
+| `lobby:start` | — host only, while `lobby` or `finished`; from `finished` it is the rematch and resets every score | `{}` |
 | `round:guess` | `{ roundNumber, guess }` | `{ correct: false }` or `{ correct: true, points, elapsedMs }` |
 | `lobby:leave` | — | `{}` |
 
@@ -713,10 +747,12 @@ These are deliberately not decided yet. Ask before assuming an answer:
   eliminated, and the honest fix is a deeper pool, which grows for as long as
   the fill tool is left running.
   Whether a *lobby* should also remember what it saw last game is undecided.
-- **The results screen** — `/<CODE>/results` is a blank page, with a toast the
-  only thing that says why a called-off game ended. Final standings and a
-  rematch on the same lobby (which needs scores reset and `start` opened up
-  from `finished`) are unbuilt.
+- **Nobody new can join a rematch.** Joining is still only allowed while
+  status is `lobby`, so the results screen's Play again is for the seats
+  already in the room — and a lobby whose players have left below
+  `MIN_PLAYERS_TO_START` can never start again, which the page says out loud.
+  Whether `finished` should open the door (it is a setup phase now, and the
+  code on the results header is as readable-out as ever) is undecided.
 - **Nothing backfills a language added later.** A new entry in the catalogue is
   all the schema, the tool and the UI need — but every round already banked was
   written without it, and `draw` passes those over, so the new language starts

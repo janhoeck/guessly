@@ -240,8 +240,10 @@ const CONTROL_CHARACTERS = /\p{Cc}/u;
 
 /**
  * The phases in which a lobby is being *set up* rather than played: before the
- * first round, and again once somebody has won and the room is deciding what to
- * play next. Starting a game is deliberately not on this list — see `start`.
+ * first round, and again once a game has ended and the room is deciding what
+ * to play next. Every host power runs in exactly this window — including
+ * `start`, which is what makes the results screen's rematch a plain start
+ * rather than a second code path. See `requireHost`.
  */
 const CONFIGURABLE_STATUSES: readonly LobbyStatus[] = ["lobby", "finished"];
 
@@ -515,22 +517,18 @@ export function createLobbyStore(overrides: Partial<LobbyStoreDeps> = {}): Lobby
   };
 
   /**
-   * The statuses are a parameter rather than a constant because the host powers
-   * do not all open the same window: the target score and starting a game are
-   * settled before kick-off, while topics can also be re-picked once a game has
-   * been won.
+   * Every host power opens in the same window — the two setup phases — so the
+   * check lives once rather than as a parameter: mid-game there is nothing a
+   * host may change, because the game being played was configured before it
+   * started and the next one is configured after it ends.
    */
-  const requireHost = (
-    code: string,
-    playerId: string,
-    allowedStatuses: readonly LobbyStatus[],
-  ): { lobby: LobbyRecord } | AckFailure => {
+  const requireHost = (code: string, playerId: string): { lobby: LobbyRecord } | AckFailure => {
     const lobby = lobbies.get(normalizeCode(code));
     if (!lobby) return { ok: false, error: "LOBBY_NOT_FOUND", message: "That lobby no longer exists." };
     if (lobby.hostId !== playerId) {
       return { ok: false, error: "NOT_HOST", message: "Only the host can do that." };
     }
-    if (!allowedStatuses.includes(lobby.status)) {
+    if (!CONFIGURABLE_STATUSES.includes(lobby.status)) {
       return { ok: false, error: "GAME_IN_PROGRESS", message: "The game has already started." };
     }
     return { lobby };
@@ -635,7 +633,7 @@ export function createLobbyStore(overrides: Partial<LobbyStoreDeps> = {}): Lobby
     },
 
     setTarget(code, playerId, targetScore) {
-      const host = requireHost(code, playerId, ["lobby"]);
+      const host = requireHost(code, playerId);
       if ("ok" in host) return host;
       const targetError = checkTargetScore(targetScore);
       if (targetError) return targetError;
@@ -646,7 +644,7 @@ export function createLobbyStore(overrides: Partial<LobbyStoreDeps> = {}): Lobby
     },
 
     setTopics(code, playerId, topics) {
-      const host = requireHost(code, playerId, CONFIGURABLE_STATUSES);
+      const host = requireHost(code, playerId);
       if ("ok" in host) return host;
       const topicsError = checkTopics(topics);
       if (topicsError) return topicsError;
@@ -661,7 +659,7 @@ export function createLobbyStore(overrides: Partial<LobbyStoreDeps> = {}): Lobby
       // running game holds an answer and its aliases in one language, so a
       // switch mid-round would leave the matcher comparing German typing to an
       // English answer.
-      const host = requireHost(code, playerId, CONFIGURABLE_STATUSES);
+      const host = requireHost(code, playerId);
       if ("ok" in host) return host;
       const languageError = checkLanguage(language);
       if (languageError) return languageError;
@@ -672,19 +670,30 @@ export function createLobbyStore(overrides: Partial<LobbyStoreDeps> = {}): Lobby
     },
 
     start(code, playerId) {
-      const host = requireHost(code, playerId, ["lobby"]);
+      const host = requireHost(code, playerId);
       if ("ok" in host) return host;
+      const { lobby } = host;
 
-      if (presentCount(host.lobby) < MIN_PLAYERS_TO_START) {
+      if (presentCount(lobby) < MIN_PLAYERS_TO_START) {
         return err("NOT_ENOUGH_PLAYERS", `You need ${MIN_PLAYERS_TO_START} players to start.`);
       }
 
-      const topic = pickTopic(host.lobby);
+      const topic = pickTopic(lobby);
       if (topic === null) {
         return err("INVALID_TOPICS", "This lobby has no topics to play.");
       }
 
-      return ok(openRound(host.lobby, 1, topic, deps.now()));
+      // Every start is round one of a fresh game. From `finished` this is the
+      // rematch — the standings the results screen just reported are settled,
+      // and nobody spots the loser a head start. From `lobby` it is usually a
+      // no-op, except after an abandoned game, which would otherwise carry
+      // half a scoreboard and its exclusion list into a game calling itself
+      // new. The seats, the topics, the language and the target all stay:
+      // they are the lobby, not the game.
+      for (const player of lobby.players.values()) player.score = 0;
+      lobby.usedAnswers = [];
+
+      return ok(openRound(lobby, 1, topic, deps.now()));
     },
 
     deliverRound(code, number, content, answer, aliases) {

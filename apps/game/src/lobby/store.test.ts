@@ -286,6 +286,12 @@ describe("setTarget", () => {
     unwrap(store.start(code, host.playerId));
     expect(failure(store.setTarget(code, host.playerId, 250))).toBe("GAME_IN_PROGRESS");
   });
+
+  it("opens up again once the game has been won", () => {
+    const { store, code, host } = wonGame();
+    unwrap(store.setTarget(code, host.playerId, 250));
+    expect(store.snapshot(code)?.targetScore).toBe(250);
+  });
 });
 
 describe("setTopics", () => {
@@ -324,13 +330,12 @@ describe("setTopics", () => {
     expect(failure(store.setTopics(code, host.playerId, ["flags"]))).toBe("GAME_IN_PROGRESS");
   });
 
-  /**
-   * The other half of `CONFIGURABLE_STATUSES`. `finished` is unreachable
-   * through this API today — nothing sets it, because the round engine that
-   * declares a winner does not exist yet — so this is a todo rather than a
-   * test that quietly passes by never running the branch.
-   */
-  it.todo("allows a re-pick once a game has been won");
+  /** The other half of `CONFIGURABLE_STATUSES`: the room deciding what to play next. */
+  it("allows a re-pick once a game has been won", () => {
+    const { store, code, host } = wonGame();
+    unwrap(store.setTopics(code, host.playerId, ["flags"]));
+    expect(store.snapshot(code)?.topics).toEqual(["flags"]);
+  });
 });
 
 describe("setLanguage", () => {
@@ -754,6 +759,77 @@ describe("the round loop", () => {
 
     const midRound = playing();
     expect(midRound.store.advance(midRound.code, 1)).toBeNull();
+  });
+});
+
+/**
+ * A two-player lobby whose game has been played to a winner: the host answered
+ * every round on the instant against the lowest target the store accepts, and
+ * the lobby now sits in `finished` with the results screen up.
+ */
+function wonGame() {
+  const harness = lobbyOf(2);
+  const { store, code, host } = harness;
+  unwrap(store.setTarget(code, host.playerId, MIN_TARGET_SCORE));
+
+  let request = unwrap(store.start(code, host.playerId));
+  for (;;) {
+    harness.advance(COUNTDOWN_DURATION_MS);
+    store.deliverRound(code, request.number, A_PICTURE, `Answer ${request.number}`, []);
+    store.guess(code, host.playerId, request.number, `Answer ${request.number}`);
+    harness.advance(ROUND_DURATION_MS);
+    store.revealRound(code, request.number);
+    harness.advance(INTERMISSION_DURATION_MS);
+    const advanced = store.advance(code, request.number);
+    if (!advanced) throw new Error("expected the intermission to advance");
+    if (advanced.kind === "finished") return harness;
+    request = advanced.request;
+  }
+}
+
+describe("the rematch", () => {
+  it("opens round one again from finished, with the scoreboard level", () => {
+    const { store, code, host } = wonGame();
+
+    const request = unwrap(store.start(code, host.playerId));
+    expect(request.number).toBe(1);
+    // Last game's answers are not carried over: a rematch is a new game, and
+    // across games it is the bank's rotation that softens repeats.
+    expect(request.exclude).toEqual([]);
+
+    const state = store.snapshot(code);
+    expect(state?.status).toBe("countdown");
+    expect(state?.players.map((player) => player.score)).toEqual([0, 0]);
+    expect(state?.round).toMatchObject({ number: 1, content: null, answer: null });
+  });
+
+  it("refuses anybody but the host, like any other start", () => {
+    const { store, code, joiners } = wonGame();
+    expect(failure(store.start(code, joiners[0]!.playerId))).toBe("NOT_HOST");
+  });
+
+  it("refuses a rematch the remaining seats could not field", () => {
+    const { store, code, host, joiners } = playing();
+    // The departure ended the game; the host now sits alone in `finished`.
+    store.leave(code, joiners[0]!.playerId);
+    expect(failure(store.start(code, host.playerId))).toBe("NOT_ENOUGH_PLAYERS");
+  });
+
+  it("levels a scoreboard left over from an abandoned game too", () => {
+    // Round two's build failed and the lobby was put back — with round one's
+    // points still on the board and its answer still on the exclusion list.
+    const { store, code, host, advance } = playing();
+    store.guess(code, host.playerId, 1, "Bhutan");
+    advance(ROUND_DURATION_MS);
+    store.revealRound(code, 1);
+    advance(INTERMISSION_DURATION_MS);
+    const next = store.advance(code, 1);
+    if (next?.kind !== "next") throw new Error("expected another round");
+    store.abandonRound(code, 2);
+
+    const request = unwrap(store.start(code, host.playerId));
+    expect(request.exclude).toEqual([]);
+    expect(store.snapshot(code)?.players.map((player) => player.score)).toEqual([0, 0]);
   });
 });
 

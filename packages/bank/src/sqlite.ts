@@ -86,7 +86,7 @@ const migrate = (db: DatabaseSync): void => {
     .all() as { name: string }[];
 
   console.log("[bank] moving the rounds already banked into round_texts; they are English");
-  db.exec("BEGIN");
+  db.exec("BEGIN IMMEDIATE");
   try {
     // A rename carries the indexes across under their old names, which the
     // schema below would then collide with.
@@ -173,9 +173,13 @@ export function createSqliteRoundRepository(path: string): RoundRepository {
         await mkdir(dirname(path), { recursive: true });
       }
       db = new DatabaseSync(path);
-      // WAL lets the sweep read while a top-up writes. Meaningless for
-      // :memory:, harmless too.
+      // WAL lets the server deal rounds while the fill tool — its own
+      // process, on the same file — banks new ones. The busy timeout is for
+      // the moments both write at once: wait politely instead of throwing
+      // SQLITE_BUSY at whoever came second. Both are meaningless for
+      // :memory:, and harmless.
       db.exec("PRAGMA journal_mode = WAL;");
+      db.exec("PRAGMA busy_timeout = 5000;");
       db.exec("PRAGMA foreign_keys = ON;");
       migrate(db);
       db.exec(SCHEMA);
@@ -186,11 +190,13 @@ export function createSqliteRoundRepository(path: string): RoundRepository {
       if (languages.length === 0) return false;
 
       const database = open();
-      // Checked, then written, in one transaction. Nothing can interleave
-      // with it — this process is single-threaded and `node:sqlite` is
-      // synchronous — so the check is as good as the unique index it replaces,
-      // and it is a check rather than an index because the answer being looked
-      // for now lives one table away from the topic that scopes it.
+      // Checked, then written, in one immediate transaction: the write lock
+      // is taken before the check, so nothing can interleave with it — not
+      // this process, and not the other one, now that the fill tool and the
+      // server share the file. The check is as good as the unique index it
+      // replaces, and it is a check rather than an index because the answer
+      // being looked for now lives one table away from the topic that scopes
+      // it.
       const clashes = database.prepare(
         `SELECT 1 FROM round_texts
            JOIN rounds ON rounds.id = round_texts.round_id
@@ -198,7 +204,7 @@ export function createSqliteRoundRepository(path: string): RoundRepository {
           LIMIT 1`,
       );
 
-      database.exec("BEGIN");
+      database.exec("BEGIN IMMEDIATE");
       try {
         for (const language of languages) {
           const text = round.texts[language];

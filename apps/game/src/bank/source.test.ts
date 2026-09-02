@@ -1,18 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { DownloadedImage } from "../content/download.js";
-import {
-  RoundSourceError,
-  type GeneratedRound,
-  type GeneratedTexts,
-  type GenerationRequest,
-  type RoundGenerator,
-} from "../content/source.js";
+import { RoundSourceError } from "../content/source.js";
 import { matchesAnswer } from "../lobby/matching.js";
 import type { RoundRequest } from "../lobby/store.js";
-import type { ImageStore } from "./images.js";
-import type { RoundRepository } from "./repository.js";
+import { createSqliteRoundRepository, type NewBankedRound, type RoundRepository } from "@guessly/bank";
 import { createBankedRoundSource } from "./source.js";
-import { createSqliteRoundRepository } from "./sqlite.js";
 
 const NOON = 1_700_000_000_000;
 const NEVER = new AbortController().signal;
@@ -30,34 +21,32 @@ function request(overrides: Partial<RoundRequest> = {}): RoundRequest {
   };
 }
 
-/** The same subject named in both languages, which is what a generation is. */
-function texts(en: string, de: string, aliases: string[] = []): GeneratedTexts {
+/** A banked image round: the same subject named in both languages. */
+function bankedImage(en: string, de = en, aliases: string[] = []): NewBankedRound {
   return {
-    en: { question: "Which country's flag is this?", answer: en, aliases },
-    de: { question: "Welches Land hat diese Flagge?", answer: de, aliases: [] },
-  };
-}
-
-function imageRound(en: string, de = en, aliases: string[] = []): GeneratedRound {
-  return {
+    topic: "flags",
     kind: "image",
     subject: en,
-    texts: texts(en, de, aliases),
-    image: {
-      bytes: Buffer.from(en),
-      contentType: "image/png",
-      extension: "png",
-      sourceUrl: `https://example.test/${en.toLowerCase()}.png`,
+    imageFile: `${en.toLowerCase().padEnd(64, "0").slice(0, 64)}.png`,
+    sourceUrl: `https://example.test/${en.toLowerCase()}.png`,
+    snippet: null,
+    snippetLanguage: null,
+    texts: {
+      en: { question: "Which country's flag is this?", answer: en, aliases },
+      de: { question: "Welches Land hat diese Flagge?", answer: de, aliases: [] },
     },
   };
 }
 
-function lyricsRound(answer: string): GeneratedRound {
+function bankedLyrics(answer: string): NewBankedRound {
   return {
+    topic: "music",
     kind: "lyrics",
     subject: answer,
-    snippetLanguage: "en",
+    imageFile: null,
+    sourceUrl: null,
     snippet: "Is any of this real,\nor did I make it up?",
+    snippetLanguage: "en",
     texts: {
       en: { question: "Which song is this?", answer, aliases: [] },
       de: { question: "Welcher Song ist das?", answer, aliases: [] },
@@ -65,58 +54,23 @@ function lyricsRound(answer: string): GeneratedRound {
   };
 }
 
-/** Hands out queued rounds and remembers what it was asked. */
-function generatorOf(...rounds: GeneratedRound[]): RoundGenerator & {
-  requests: GenerationRequest[];
-} {
-  const queue = [...rounds];
-  const requests: GenerationRequest[] = [];
-  return {
-    requests,
-    async generate(generationRequest) {
-      requests.push(generationRequest);
-      const next = queue.shift();
-      if (!next) throw new RoundSourceError("the stub has nothing left");
-      return next;
-    },
-  };
-}
-
-function fakeImages(): ImageStore & { saved: DownloadedImage[] } {
-  const saved: DownloadedImage[] = [];
-  return {
-    saved,
-    async init() {},
-    async save(image) {
-      saved.push(image);
-      return `${String(saved.length).padStart(64, "0")}.${image.extension}`;
-    },
-    resolve: () => null,
-  };
-}
-
-async function harness(options: { generator?: RoundGenerator; lowWater?: number } = {}) {
+async function harness(...rounds: NewBankedRound[]) {
   const repository = createSqliteRoundRepository(":memory:");
   await repository.init();
-  const images = fakeImages();
-  const generator = options.generator ?? generatorOf();
+  for (const round of rounds) await repository.insert(round, NOON, false);
   const source = createBankedRoundSource({
     repository,
-    images,
-    generator,
     // Trailing slash on purpose: the source must not serve "…//img/…".
     publicBaseUrl: "http://game.test:3001/",
-    // Zero by default so background top-ups never muddy a foreground test.
-    lowWater: options.lowWater ?? 0,
     now: () => NOON,
   });
-  return { repository, images, generator, source };
+  return { repository, source };
 }
 
-describe("an empty bank", () => {
-  it("generates, banks, and serves the image from our own origin", async () => {
-    const generator = generatorOf(imageRound("Bhutan"));
-    const { source, repository } = await harness({ generator });
+describe("a stocked bank", () => {
+  it("serves a banked round with the image from our own origin", async () => {
+    const round = bankedImage("Bhutan");
+    const { source } = await harness(round);
 
     const sourced = await source.build(request(), NEVER);
 
@@ -124,27 +78,23 @@ describe("an empty bank", () => {
     expect(sourced.content).toMatchObject({
       kind: "image",
       question: "Which country's flag is this?",
-      imageUrl: `http://game.test:3001/img/${String(1).padStart(64, "0")}.png`,
+      imageUrl: `http://game.test:3001/img/${round.imageFile}`,
     });
-    expect(generator.requests).toHaveLength(1);
-    expect(await repository.count("flags", "en")).toBe(1);
   });
 
-  /**
-   * The point of asking for every language in one call: one search, one
-   * download, one cached prompt, and the other language's lobbies are a bank
-   * hit from then on rather than another three seconds and another picture.
-   */
-  it("asks for every language at once, whatever the lobby plays in", async () => {
-    const generator = generatorOf(imageRound("France", "Frankreich"));
-    const { source, repository, images } = await harness({ generator });
+  /** The whole payoff: the German lobby is dealt the round the English one paid for. */
+  it("serves a lobby in the other language from the same banked round", async () => {
+    const { source } = await harness(bankedImage("France", "Frankreich"));
+    const english = await source.build(request(), NEVER);
 
-    await source.build(request({ language: "de" }), NEVER);
+    const german = await source.build(request({ code: "ZZZZZ", language: "de" }), NEVER);
 
-    expect(generator.requests[0]?.languages).toEqual(["en", "de"]);
-    expect(images.saved).toHaveLength(1);
-    expect(await repository.count("flags", "en")).toBe(1);
-    expect(await repository.count("flags", "de")).toBe(1);
+    expect(german.answer).toBe("Frankreich");
+    expect(german.content).toMatchObject({ question: "Welches Land hat diese Flagge?" });
+    // Same picture, different words.
+    expect(german.content).toMatchObject({
+      imageUrl: (english.content as { imageUrl: string }).imageUrl,
+    });
   });
 
   /**
@@ -153,8 +103,7 @@ describe("an empty bank", () => {
    * gets, so there is only ever one of them.
    */
   it("asks a lyrics round in the room's language and shows the song in its own", async () => {
-    const generator = generatorOf(lyricsRound("Bohemian Rhapsody"));
-    const { source } = await harness({ generator });
+    const { source } = await harness(bankedLyrics("Bohemian Rhapsody"));
 
     const sourced = await source.build(
       request({ topic: "music", kind: "lyrics", language: "de" }),
@@ -168,61 +117,23 @@ describe("an empty bank", () => {
       snippetLanguage: "en",
     });
   });
-});
 
-describe("a stocked bank", () => {
-  it("serves the next game without asking the generator", async () => {
-    const generator = generatorOf(imageRound("Bhutan"));
-    const { source } = await harness({ generator });
-    await source.build(request(), NEVER);
-
-    const again = await source.build(request({ code: "ZZZZZ" }), NEVER);
-
-    expect(again.answer).toBe("Bhutan");
-    expect(again.content).toMatchObject({ kind: "image", imageUrl: expect.stringContaining("/img/") });
-    expect(generator.requests).toHaveLength(1);
-  });
-
-  /** The whole payoff: the German lobby is dealt the round the English one paid for. */
-  it("serves a lobby in the other language from the same banked round", async () => {
-    const generator = generatorOf(imageRound("France", "Frankreich"));
-    const { source, images } = await harness({ generator });
-    const english = await source.build(request(), NEVER);
-
-    const german = await source.build(request({ code: "ZZZZZ", language: "de" }), NEVER);
-
-    expect(generator.requests).toHaveLength(1);
-    expect(images.saved).toHaveLength(1);
-    expect(german.answer).toBe("Frankreich");
-    expect(german.content).toMatchObject({ question: "Welches Land hat diese Flagge?" });
-    // Same picture, different words.
-    expect(german.content).toMatchObject({ imageUrl: (english.content as { imageUrl: string }).imageUrl });
-  });
-
-  it("respects a game's used answers and generates fresh instead", async () => {
-    const generator = generatorOf(imageRound("Bhutan"), imageRound("Japan"));
-    const { source, repository } = await harness({ generator });
-    await source.build(request(), NEVER);
+  it("respects a game's used answers", async () => {
+    const { source } = await harness(bankedImage("Bhutan"), bankedImage("Japan"));
 
     const second = await source.build(request({ number: 2, exclude: ["Bhutan"] }), NEVER);
 
     expect(second.answer).toBe("Japan");
-    expect(await repository.count("flags", "en")).toBe(2);
   });
 
-  it("tops a low topic back up in the background after a hit", async () => {
-    const generator = generatorOf(imageRound("Bhutan"), imageRound("Japan"));
-    const { source, repository } = await harness({ generator, lowWater: 2 });
-    await source.build(request(), NEVER);
+  /** Least-served first, so the pool deals its whole shelf before repeating. */
+  it("rotates: the second game is dealt the round the first was not", async () => {
+    const { source } = await harness(bankedImage("Bhutan"), bankedImage("Japan"));
 
-    // Bhutan came from the generator and was banked; the draw below is a hit.
-    await source.build(request({ code: "ZZZZZ" }), NEVER);
-    await source.drain();
+    const first = await source.build(request(), NEVER);
+    const second = await source.build(request({ code: "ZZZZZ" }), NEVER);
 
-    expect(await repository.count("flags", "en")).toBe(2);
-    // The top-up was told what the topic already holds, in every language.
-    expect(generator.requests.at(-1)?.exclude).toContain("Bhutan");
-    expect(generator.requests.at(-1)?.languages).toEqual(["en", "de"]);
+    expect([first.answer, second.answer].sort()).toEqual(["Bhutan", "Japan"]);
   });
 });
 
@@ -233,8 +144,7 @@ describe("guessing across languages", () => {
    * language's answer and aliases ride along in the list the matcher uses.
    */
   it("accepts the other language's answer as an alias", async () => {
-    const generator = generatorOf(imageRound("France", "Frankreich", ["French Republic"]));
-    const { source } = await harness({ generator });
+    const { source } = await harness(bankedImage("France", "Frankreich", ["French Republic"]));
 
     const german = await source.build(request({ language: "de" }), NEVER);
 
@@ -245,23 +155,12 @@ describe("guessing across languages", () => {
 
   /** A title is usually the same string in both, and one entry is enough. */
   it("does not repeat an answer both languages spell the same way", async () => {
-    const generator = generatorOf(imageRound("Bhutan", "Bhutan"));
-    const { source } = await harness({ generator });
+    const { source } = await harness(bankedImage("Bhutan", "Bhutan"));
 
     const sourced = await source.build(request(), NEVER);
 
     expect(sourced.answer).toBe("Bhutan");
     expect(sourced.aliases).toEqual([]);
-  });
-
-  it("carries the same list back out of the bank on the next game", async () => {
-    const generator = generatorOf(imageRound("France", "Frankreich"));
-    const { source } = await harness({ generator });
-    await source.build(request(), NEVER);
-
-    const drawn = await source.build(request({ code: "ZZZZZ", language: "de" }), NEVER);
-
-    expect(drawn.aliases).toContain("France");
   });
 
   /**
@@ -271,8 +170,7 @@ describe("guessing across languages", () => {
    * the sentence a player would hold us to.
    */
   it("scores either language, and still refuses a wrong answer", async () => {
-    const generator = generatorOf(imageRound("France", "Frankreich", ["French Republic"]));
-    const { source } = await harness({ generator });
+    const { source } = await harness(bankedImage("France", "Frankreich", ["French Republic"]));
 
     const round = await source.build(request({ language: "de" }), NEVER);
     const accepts = (guess: string) => matchesAnswer(guess, round.answer, round.aliases);
@@ -286,46 +184,32 @@ describe("guessing across languages", () => {
   });
 });
 
-describe("the bank never fails a round", () => {
-  it("serves a duplicate the generator produced without banking it twice", async () => {
-    const generator = generatorOf(imageRound("Bhutan"), imageRound("Bhutan"));
-    const { source, repository } = await harness({ generator });
-    await source.build(request(), NEVER);
+describe("a miss", () => {
+  /**
+   * The server never generates: an empty shelf is a failed build, and the
+   * runner's retry-on-a-fresh-topic is what turns that into a hiccup rather
+   * than a dead lobby. The message is the one a player may end up reading.
+   */
+  it("fails the round when the topic holds nothing", async () => {
+    const { source } = await harness();
 
-    // The model ignored the exclusion; the round is still played.
-    const again = await source.build(request({ number: 2, exclude: ["Bhutan"] }), NEVER);
-
-    expect(again.answer).toBe("Bhutan");
-    expect(await repository.count("flags", "en")).toBe(1);
+    await expect(source.build(request(), NEVER)).rejects.toThrowError(RoundSourceError);
+    await expect(source.build(request(), NEVER)).rejects.toThrow(/no rounds stocked/i);
   });
 
-  it("serves from the source host when the image cannot be stored", async () => {
-    const generator = generatorOf(imageRound("Bhutan"));
-    const { repository } = await harness();
-    const source = createBankedRoundSource({
-      repository,
-      images: {
-        async init() {},
-        save: () => Promise.reject(new Error("disk full")),
-        resolve: () => null,
-      },
-      generator,
-      publicBaseUrl: "http://game.test:3001",
-      lowWater: 0,
-      now: () => NOON,
-    });
+  it("fails the round when the shelf is empty in the lobby's language", async () => {
+    const round = bankedImage("Bhutan");
+    round.texts = { en: round.texts.en! };
+    const { source } = await harness(round);
 
-    const sourced = await source.build(request(), NEVER);
-
-    expect(sourced.content).toMatchObject({
-      kind: "image",
-      imageUrl: "https://example.test/bhutan.png",
-    });
-    // Unservable later, so not banked.
-    expect(await repository.count("flags", "en")).toBe(0);
+    await expect(source.build(request({ language: "de" }), NEVER)).rejects.toThrowError(
+      RoundSourceError,
+    );
+    // The English lobby is still served from the same round.
+    await expect(source.build(request(), NEVER)).resolves.toMatchObject({ answer: "Bhutan" });
   });
 
-  it("falls through to the generator when the bank itself is broken", async () => {
+  it("fails the round, not the process, when the bank cannot be read", async () => {
     const broken: RoundRepository = {
       init: async () => {},
       insert: () => Promise.reject(new Error("database is on fire")),
@@ -334,18 +218,12 @@ describe("the bank never fails a round", () => {
       answers: async () => [],
       close: async () => {},
     };
-    const generator = generatorOf(imageRound("Bhutan"));
     const source = createBankedRoundSource({
       repository: broken,
-      images: fakeImages(),
-      generator,
       publicBaseUrl: "http://game.test:3001",
-      lowWater: 0,
       now: () => NOON,
     });
 
-    const sourced = await source.build(request(), NEVER);
-    expect(sourced.answer).toBe("Bhutan");
-    expect(sourced.content).toMatchObject({ kind: "image", imageUrl: expect.stringContaining("/img/") });
+    await expect(source.build(request(), NEVER)).rejects.toThrowError(RoundSourceError);
   });
 });

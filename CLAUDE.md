@@ -9,8 +9,9 @@ is faster than everybody else.
 Each round follows the same cycle:
 
 1. A topic is picked at random.
-2. An AI sources a matching piece of content for that topic (an image, or a snippet
-   of song lyrics) *and the question to ask about it*.
+2. A matching piece of content (an image, or a snippet of song lyrics) is dealt
+   from the round bank *along with the question to ask about it* — generated
+   ahead of time by the fill tool, never on the spot.
 3. The content is shown to all players simultaneously.
 4. Players have **20 seconds** to type their guess.
 5. The correct answer is revealed and the standings settle.
@@ -33,8 +34,9 @@ is fetched against it:
 2. Every client — host and guests alike — sees `status` leave `lobby` and
    navigates to `/<CODE>`. The lobby modal on `/` is for a lobby; a game is a
    place you are at.
-3. The countdown runs 3 · 2 · 1 · GO while the round is fetched — from the
-   bank in ~0ms, or from the AI when the bank has nothing for the topic.
+3. The countdown runs 3 · 2 · 1 · GO while the round is drawn from the bank —
+   ~0ms, or a failed build when the topic's shelf is empty in the lobby's
+   language.
 4. The round goes live when **both** are done. The countdown is a floor, not a
    target: content that arrives early waits for it, and content that arrives
    late starts the clock from when it lands, so nobody is handed a round that is
@@ -59,43 +61,53 @@ wasted call; that is bounded at one per game. `game/rounds.ts` owns the chain
 and stops only on a winner, an abandoned round, or a lobby that has gone.
 
 If a round cannot be built, it is reopened **once** on a fresh topic — a new
-countdown, drawn away from the topic that failed, which after a few games
-usually lands on a stocked bank shelf, because the commonest build failure is a
-single topic run dry. Only when the retry fails too does the lobby go back to
+countdown, drawn away from the topic that failed, because the only build
+failure left is a topic whose shelf is empty in the lobby's language, and the
+next topic over is usually a stocked one. Only when the retry fails too does the lobby go back to
 `lobby`, everybody return to `/`, and `round:failed` say why. A game that
 quietly strands five people on a countdown is worse than one that admits it
 failed — and a game ended on round eight because one topic had no pictures is
 worse than a countdown that starts over.
 
-The three seconds are spent on a countdown rather than a spinner because the
-wait can be real — a bank hit is instant, but a cold topic is a web search, and
-a web search takes as long as it takes — and a number falling is a better thing
-to watch than a wheel turning.
+The three seconds used to cover a real wait — a cold topic was a web search
+made in front of the countdown. Every build is a bank draw now, so the
+countdown is pacing rather than cover; it stays because a round that simply
+appears is a round half the room missed the start of.
 
 ## Sourcing Content
 
-Content is **produced and consumed at different times**, and that split is the
-architecture. `apps/game/src/bank/` is the consuming side: a persistent pool of
-verified rounds — SQLite plus a directory of downloaded images — that answers a
-build in ~0ms. `apps/game/src/content/` is the producing side: Claude, asked
-for a round. The game only ever talks to the bank (`bank/source.ts` implements
-`RoundContentSource`); the bank talks to the generator when it must:
+Content is **produced and consumed by different processes**, and that split is
+the architecture — visible in the workspace layout. `packages/bank` is the
+seam both processes share: a persistent pool of verified rounds — SQLite plus
+a directory of content-addressed images — behind `RoundRepository` and
+`ImageStore`. `apps/game/src/bank/source.ts` is the consuming side, answering
+a build in ~0ms. `tools/fill` is the producing side: Claude, asked for a
+round, by a service the operator runs and watches. The server only ever talks
+to the bank (`bank/source.ts` implements `RoundContentSource`) and **never
+calls the AI** — it does not even depend on the SDK:
 
 - **A build is served from the bank** when the topic holds a round *written in
   the lobby's language* whose answer the game has not used. The draw rotates —
   least-served first — so the pool deals its whole shelf before repeating a
   favourite across games, and a round rotates once however many languages it
   holds, because it is one round.
-- **A miss generates in the foreground** (this is the only time players wait on
-  the AI) and the fresh round is banked on the way out, so the same work is
-  never paid for twice.
-- **A draw that leaves a topic below the low-water mark kicks a background
-  top-up**, one round per topic at a time. The pool fills *because* the game is
-  played, and an idle server spends nothing. Over time the generator drifts out
-  of the hot path entirely.
-- **The bank is an optimisation, never a new way to fail.** A broken draw falls
-  through to the generator, a round that cannot be banked is still served, an
-  image that cannot be stored is served from its source host.
+- **A miss fails the round.** There is no generator behind the server to fall
+  back on — deliberately: an AI call is money and minutes, and it now only
+  happens where somebody chose to spend both. The runner retries once on a
+  fresh topic (see Starting a Game), and `pnpm fill` is the actual fix.
+- **`pnpm fill` fills the shelves** — `tools/fill/src/main.ts` driving the
+  filler in `tools/fill/src/fill.ts` in an endless loop: thinnest shelf first, gauged per language,
+  generate, bank, and immediately start the next, until Ctrl+C. Every
+  generation is a log line in front of the operator rather than a surprise in
+  the server log, and the spend stops when the tool does. A topic whose
+  generation fails is benched with a doubling backoff, so a topic run dry backs
+  out of the rotation on its own and a dead API rests the whole loop instead of
+  burning retries.
+- **The bank is the only way a round reaches players**, so what used to be its
+  serving fallbacks are now refusals at fill time: an image that cannot be
+  downloaded or stored fails the fill — nothing is banked that players could
+  not load — and a broken draw fails the round the same way an empty shelf
+  does.
 
 **A round is one subject and every language at once.** The generator is asked
 for all of them in a single call and the bank stores what the round *shows* —
@@ -104,9 +116,9 @@ row per language for what it asks and accepts, so the search, the picture and th
 prefix are paid for once and the second language costs a few hundred output
 tokens. What that buys the players is a German lobby being dealt, in ~0ms, the
 round an English lobby paid for last night. It also decides the gauge: the
-low-water count asks how many rounds a topic holds *in the language being
-dealt*, because a topic full of rounds none of which were written in German is
-an empty shelf to a German lobby.
+fill tool measures a topic's shelf by the language it holds the *fewest*
+rounds in, because a topic full of rounds none of which were written in German
+is an empty shelf to a German lobby.
 
 `sqlite.ts` carries one migration, and it exists to protect a bank that already
 has pictures in it. A round used to carry its question, answer and aliases
@@ -116,7 +128,7 @@ its paraphrase staying on the round, where it always belonged — and dropped,
 inside a transaction, because a bank half moved is worse than a bank in either
 shape. Those rounds go on being dealt to English lobbies and are
 passed over for German ones, which is what an empty German shelf looks like
-until play fills it.
+until a fill run stocks it.
 
 **Images are self-hosted.** The generator downloads the picture — whole file,
 capped, format verified by magic bytes rather than by anybody's content-type
@@ -125,8 +137,8 @@ it from this server's own origin at `/img/<hash>.<ext>`. Players never load
 from a third-party host, so hotlink blocks, CORS and link rot cannot kill a
 round at render time. The source URL is kept in the bank for attribution.
 
-`content/claude.ts` produces rounds, and three things make the reply safe to
-parse, none of them hope:
+`tools/fill/src/content/claude.ts` produces rounds, and three things make the
+reply safe to parse, none of them hope:
 
 - **It is a `strict` tool call, not prose.** `submit_round` carries a JSON Schema
   with `additionalProperties: false`, so the input validates by construction.
@@ -162,9 +174,9 @@ Real lyrics are copyrighted and this game does not quote them. Writing the
 paraphrase in the song's own language makes that *harder*, because the real
 words are the nearest phrasing to hand, so the prompt says so out loud.
 
-`ANTHROPIC_API_KEY` is required at boot. A server that cannot build a round will
-fail in front of players three clicks later, and a crash at start-up says so far
-more loudly.
+`ANTHROPIC_API_KEY` belongs to the fill tool, which refuses to start without
+it. The server neither needs nor checks it: a server with an empty bank fails
+a round honestly, and the fix is a fill run, not a restart.
 
 ## Guessing
 
@@ -339,19 +351,25 @@ against the keyboards that cannot type it.
 
 ## Architecture
 
-Two processes, in a pnpm workspace driven by Turborepo:
+Two long-running processes plus an on-demand service, in a pnpm workspace
+driven by Turborepo:
 
 ```
 apps/web/           # Next.js app. Renders UI. Holds no game state.
 apps/game/          # Node + Socket.IO server. Owns all lobby state, in memory.
-                    # Also owns the round bank: data/ holds rounds.db + images/.
+                    # Reads the round bank; its data/ holds rounds.db + images/.
+tools/fill/         # The fill service: the only process that calls the AI.
+                    # Writes the round bank the game server reads.
 packages/protocol/  # Shared TypeScript types for every socket event.
+packages/bank/      # The round bank: repository, SQLite, image store — the
+                    # seam apps/game and tools/fill share instead of each other.
 ```
 
-`packages/protocol` compiles to `dist`, and both apps depend on it, so turbo
-builds it before either of them and keeps it in watch mode behind both servers
-in dev. Everything runs from the root: `pnpm dev`, `pnpm build`, `pnpm lint`,
-`pnpm typecheck`, `pnpm test`. Each is a turbo task graph, so a package is only
+`packages/protocol` and `packages/bank` compile to `dist`; turbo builds them
+before anything that depends on them and keeps them in watch mode behind the
+servers in dev. Everything runs from the root: `pnpm dev`, `pnpm build`,
+`pnpm lint`, `pnpm typecheck`, `pnpm test` — and `pnpm fill`, which runs the
+fill service until Ctrl+C. Each is a turbo task graph, so a package is only
 rebuilt when its own inputs change.
 
 The web tier is stateless and the game server is stateful, so they are kept apart
@@ -376,29 +394,34 @@ server on, because banked image URLs are built from it.
 The client connects via `NEXT_PUBLIC_SOCKET_URL`. Socket.IO gets an explicit
 origin allowlist, never `*`.
 
-**Configuration** is read once at boot by `apps/game/src/config.ts`. Copy
-`apps/game/.env.example` to `apps/game/.env` and put your key in it; the server
-loads that file itself, through Node's own `process.loadEnvFile`, resolved
-against the module so the working directory does not matter. A real environment
-variable beats the file, so a deploy sets its variables properly and ships no
-`.env` at all.
+**Configuration** is read once at boot, by `apps/game/src/config.ts` for the
+server and `tools/fill/src/config.ts` for the fill service — which is where
+the API key lives now. Each process loads its own `.env` (copy the package's
+`.env.example`), through Node's own `process.loadEnvFile`, resolved against
+the module so the working directory does not matter; the fill service also
+reads `apps/game/.env` as a fallback, so one key in one place is enough
+locally. A real environment variable beats the files, so a deploy sets its
+variables properly and ships no `.env` at all.
 
 Turbo runs tasks in **strict env mode**, which means a variable the shell
 exports does not reach a task unless `turbo.json` names it. `PORT`,
-`CORS_ORIGINS`, `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`, `DATA_DIR` and
-`PUBLIC_BASE_URL` are listed under `passThroughEnv` on `dev` and `start` —
-passed through rather than hashed, because they are runtime configuration and
-one of them is a secret. A new runtime variable has to be added there or it
-will silently go missing.
+`CORS_ORIGINS`, `DATA_DIR` and `PUBLIC_BASE_URL` are listed under
+`passThroughEnv` on `dev` and `start`, and `ANTHROPIC_API_KEY`,
+`ANTHROPIC_MODEL` and `DATA_DIR` on `fill` — passed through rather than
+hashed, because they are runtime configuration and one of them is a secret. A
+new runtime variable has to be added there or it will silently go missing.
 
-**Lobbies are memory; content is an asset.** Lobby state lives in this process
-and dies with it — deliberately, see Lobbies. The round bank persists: SQLite
-(via Node's own `node:sqlite`, no native dependency) behind the
-`RoundRepository` interface in `bank/repository.ts`, whose methods are async
+**Lobbies are memory; content is an asset.** Lobby state lives in the game
+server's process and dies with it — deliberately, see Lobbies. The round bank
+persists: SQLite (via Node's own `node:sqlite`, no native dependency) behind
+the `RoundRepository` interface in `packages/bank`, whose methods are async
 *because* the next implementation is Postgres — swapping it in is one new file,
-not a change to any caller. Nothing outside `bank/` knows which one is plugged
-in. Two tables: `rounds` is what was photographed and how often it has been
-dealt, `round_texts` is what each language asks and accepts about it.
+not a change to any caller. Nothing outside `packages/bank` knows which one is
+plugged in. Two tables: `rounds` is what was photographed and how often it has
+been dealt, `round_texts` is what each language asks and accepts about it.
+Because the server deals from the same SQLite file the fill service writes,
+the repository sets a busy timeout and takes write locks up front (`BEGIN
+IMMEDIATE`) — two polite writers instead of one surprised one.
 
 ## Web UI
 
@@ -660,13 +683,16 @@ answer to an abandoned round is refused rather than guarded against.
 
 `RoundContentSource` is the seam this hangs on: `store.start` issues a plain
 `RoundRequest` and never learns how it is answered, so the round bank, a
-fixture and a stub are interchangeable. The socket tests drive a stub;
-`content/` is tested through `parseSubmission`, which is where "the model said
-something strange" has to come back as a rejection rather than a throw. The
-bank has its own two seams and tests both: `bank/sqlite.test.ts` runs the real
-repository against `:memory:`, and `bank/source.test.ts` drives the pool logic
-— draw, miss, top-up, and every never-fail fallback — with a stub generator
-and a fake image store.
+fixture and a stub are interchangeable. The socket tests drive a stub; the
+fill service's `content/` is tested through `parseSubmission`, which is where
+"the model said something strange" has to come back as a rejection rather
+than a throw. The bank is tested from both of its ends, each in its own
+package: `packages/bank`'s `sqlite.test.ts` runs the real repository against
+`:memory:`; the game's `bank/source.test.ts` drives the consuming side —
+draws, cross-language aliases, and the misses that fail a round — against it;
+and `tools/fill`'s `fill.test.ts` drives the producing side — thinnest shelf
+first, exclusion lists, benching and backoff — with a stub generator and a
+fake image store.
 
 ## Open Questions
 
@@ -675,7 +701,8 @@ These are deliberately not decided yet. Ask before assuming an answer:
 - **Content repetition across games** — within a game, `usedAnswers` is the
   exclusion list. Across games the bank rotates (least-served first), so a
   repeat now means the topic's whole shelf has been dealt — softened, not
-  eliminated, and the honest fix is a deeper pool, which grows with play.
+  eliminated, and the honest fix is a deeper pool, which grows for as long as
+  the fill tool is left running.
   Whether a *lobby* should also remember what it saw last game is undecided.
 - **The results screen** — `/<CODE>/results` is a blank page, with a toast the
   only thing that says why a called-off game ended. Final standings and a
@@ -689,6 +716,7 @@ These are deliberately not decided yet. Ask before assuming an answer:
   would be cheap and is unwritten; whether it is worth writing depends on how
   often a language is added, which is so far never.
 - **The bank has no curator** — nothing retires a round nobody solves, nothing
-  turns near-miss guesses into aliases, and nothing but the low-water mark
-  decides how deep a topic's pool should be. The play data to drive all three
-  exists per round and is currently thrown away at reveal.
+  turns near-miss guesses into aliases, and nothing decides how deep a topic's
+  shelf *should* be: the fill tool fills evenly for as long as it runs. The
+  play data to drive all three exists per round and is currently thrown away
+  at reveal.

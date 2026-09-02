@@ -1,26 +1,25 @@
 {
-  "name": "@guessly/game",
+  "name": "@guessly/fill",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "main": "./dist/index.js",
+  "main": "./dist/main.js",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
+    "fill": "tsx src/main.ts",
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/index.js",
+    "start": "node dist/main.js",
     "typecheck": "tsc -p tsconfig.typecheck.json",
     "clean": "rimraf dist .turbo",
     "test": "vitest run"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.123.0",
     "@guessly/bank": "workspace:*",
-    "@guessly/protocol": "workspace:*",
-    "socket.io": "^4.8.1"
+    "@guessly/protocol": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^26",
     "rimraf": "^6.0.1",
-    "socket.io-client": "^4.8.1",
     "tsx": "^4.20.3",
     "typescript": "^5",
     "vitest": "^4.1.11"

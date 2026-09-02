@@ -8,6 +8,7 @@
     "start": "turbo run start",
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
+    "fill": "turbo run fill",
     "test": "turbo run test",
     "clean": "turbo run clean && rimraf .turbo"
   },

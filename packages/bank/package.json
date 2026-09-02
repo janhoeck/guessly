@@ -1,0 +1,33 @@
+{
+  "name": "@guessly/bank",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsc -p tsconfig.json --watch --preserveWatchOutput",
+    "typecheck": "tsc -p tsconfig.typecheck.json",
+    "test": "vitest run",
+    "clean": "rimraf dist .turbo"
+  },
+  "dependencies": {
+    "@guessly/protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^26",
+    "rimraf": "^6.0.1",
+    "typescript": "^5",
+    "vitest": "^4.1.11"
+  }
+}

@@ -1,7 +1,12 @@
 import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { DownloadedImage } from "../content/download.js";
+/** The bytes and the verified format — all the store needs to file a picture. */
+export interface StorableImage {
+  bytes: Buffer;
+  /** Verified from the bytes by whoever downloaded it; names the file. */
+  extension: string;
+}
 
 /**
  * Where the pictures live: a directory of files named by the SHA-256 of their
@@ -29,7 +34,7 @@ const FILENAME = /^[0-9a-f]{64}\.[a-z0-9]+$/;
 export interface ImageStore {
   init(): Promise<void>;
   /** Writes the image and returns the filename to bank alongside the round. */
-  save(image: DownloadedImage): Promise<string>;
+  save(image: StorableImage): Promise<string>;
   /** Path and content type for a stored filename; null for a name we never issued. */
   resolve(filename: string): { path: string; contentType: string } | null;
 }

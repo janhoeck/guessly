@@ -80,7 +80,7 @@ export function describeSourceFailure(error: unknown, model: string): SourceFail
     case 401:
       return {
         message: MISCONFIGURED,
-        detail: "ANTHROPIC_API_KEY was rejected (401) — check the key in apps/game/.env",
+        detail: "ANTHROPIC_API_KEY was rejected (401) — check the key in tools/fill/.env (or apps/game/.env, its fallback)",
       };
     case 403:
       return {

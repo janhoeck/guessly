@@ -37,9 +37,9 @@ import {
  * to hope about later — the bank stores them and the players load the picture
  * from this server's own origin.
  *
- * Most generation runs behind the bank: a background top-up, or a prefetch
- * hidden behind the round on screen. Only a cold bank puts this in front of a
- * countdown, so the numbers below buy reliability first and speed second.
+ * Generation only ever runs inside the fill tool now — nobody is watching a
+ * countdown while it works — so the numbers below buy reliability first and
+ * speed second.
  */
 
 /** Room for adaptive thinking plus a short structured answer. */

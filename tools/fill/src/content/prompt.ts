@@ -195,7 +195,7 @@ export function buildUserPrompt(options: {
   lines.push(
     options.exclude.length === 0
       ? "Nothing has been used yet this game."
-      : `Already used, so off limits in every language: ${options.exclude.join(", ")}.`,
+      : `Already used, so off limits in every language and under any spelling or local name: ${options.exclude.join(", ")}.`,
   );
 
   // Told rather than merely retried: a second sample of the same prompt tends to

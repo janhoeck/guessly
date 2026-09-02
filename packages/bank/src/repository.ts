@@ -102,6 +102,14 @@ export interface RoundRepository {
    * whichever language it was written in.
    */
   answers(topic: TopicId): Promise<string[]>;
+  /**
+   * Every alias banked for a topic, in every language — the half of the
+   * exclusion a generator is *checked* against but never shown. Ten aliases
+   * per language per round would drown the answers in the prompt, and the
+   * model does not need "United States" spelled out to be refused for it once
+   * the duplicate check knows a round already answers to that name.
+   */
+  aliases(topic: TopicId): Promise<string[]>;
   close(): Promise<void>;
 }
 

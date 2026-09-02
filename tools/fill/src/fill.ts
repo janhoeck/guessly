@@ -6,6 +6,7 @@ import {
   type TopicId,
 } from "@guessly/protocol";
 import type { ImageStore, NewBankedRound, RoundRepository } from "@guessly/bank";
+import { uniqueNames } from "./content/dedup.js";
 import type { RoundGenerator } from "./content/source.js";
 
 /**
@@ -114,10 +115,26 @@ export function createBankFiller(options: BankFillerOptions): BankFiller {
       try {
         // The topic's own answers are the exclusion list, in every language:
         // the point of a fill is a subject the shelf does not already hold,
-        // and it holds it whichever language it was written in.
-        const exclude = await repository.answers(topic);
+        // and it holds it whichever language it was written in — folded to
+        // unique names, because most answers are names and names are not
+        // translated: "Nike" banked in two languages is one line of prompt,
+        // not two, while "France" and "Frankreich" both stay. The aliases
+        // ride along unshown, for the generator's duplicate check — a subject
+        // the shelf holds under another name is still a subject it holds.
+        const [answers, excludeAliases] = await Promise.all([
+          repository.answers(topic),
+          repository.aliases(topic),
+        ]);
+        const exclude = uniqueNames(answers);
         const generated = await generator.generate(
-          { topic, kind: topicById(topic).kind, languages, number: pick.level + 1, exclude },
+          {
+            topic,
+            kind: topicById(topic).kind,
+            languages,
+            number: pick.level + 1,
+            exclude,
+            excludeAliases,
+          },
           signal,
         );
 
@@ -136,9 +153,11 @@ export function createBankFiller(options: BankFillerOptions): BankFiller {
         };
 
         if (!(await repository.insert(round, now(), false))) {
-          // The model ignored the exclusion list — a sign the topic may be
-          // running dry, so it is benched like a failure rather than retried
-          // into the same wall at full speed.
+          // The generator checks for duplicates itself now, against the same
+          // lists — so a refusal this deep means the shelf changed underneath
+          // the fill, or a generator without the check repeated itself. Both
+          // are benched like a failure rather than retried into the same wall
+          // at full speed.
           return { kind: "duplicate", topic, subject: generated.subject, retryAt: bench(topic) };
         }
 

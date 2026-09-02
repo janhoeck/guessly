@@ -19,8 +19,18 @@ export interface GenerationRequest {
   number: number;
   /** Write the round in each of these. Never empty. */
   languages: readonly LanguageId[];
-  /** Answers that must not be produced again, in any language. */
+  /**
+   * Answers that must not be produced again, in any language — folded to one
+   * entry per name, so an answer two languages spell alike is listed once.
+   */
   exclude: readonly string[];
+  /**
+   * The aliases those answers are also known by. Never shown to the model —
+   * the prompt lists `exclude` and stops there — but a submission is checked
+   * against them, so "United States" is refused while "USA" is on the shelf.
+   * See content/dedup.ts.
+   */
+  excludeAliases: readonly string[];
 }
 
 /** One round as one language reads it. */

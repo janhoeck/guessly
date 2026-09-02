@@ -216,6 +216,7 @@ describe("a miss", () => {
       draw: () => Promise.reject(new Error("database is on fire")),
       count: () => Promise.reject(new Error("database is on fire")),
       answers: async () => [],
+      aliases: async () => [],
       close: async () => {},
     };
     const source = createBankedRoundSource({

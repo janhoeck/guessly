@@ -156,7 +156,16 @@ reply safe to parse, none of them hope:
   model.
 - **A rejected round is asked for again with the reason.** Re-rolling the same
   prompt tends to make the same mistake; naming the mistake does not. A round
-  whose candidate URLs all fail to download is rejected the same way.
+  whose candidate URLs all fail to download is rejected the same way — and so
+  is one the bank already holds under another spelling. The prompt's exclusion
+  list names the topic's banked answers, and `dedup.ts` enforces its spirit
+  before any image is downloaded: answers and aliases are folded (case,
+  accents, `ß`, punctuation, a leading article) and the submission is checked
+  against the banked answers *and* their aliases — though never alias against
+  alias, because song rounds alias their artist and two Queen songs are not
+  the same round. "United States" is refused while "USA" is on the shelf, with
+  the collision named to the model. The bank's own `insert` still refuses
+  exact repeats, as the guard against two fill processes racing.
 
 Image rounds get the `web_search` server tool and return up to five candidate
 URLs, best first; the first that downloads as an actual image wins. The prompt

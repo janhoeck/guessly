@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { RoundKind } from "@guessly/protocol";
 import { NUDGE_PROMPT, SYSTEM_PROMPT, buildUserPrompt } from "./prompt.js";
+import { findDuplicate } from "./dedup.js";
 import { describeSourceFailure } from "./failure.js";
 import { firstDownloadableImage } from "./download.js";
 import {
@@ -171,6 +172,15 @@ export function createClaudeRoundGenerator(
         { signal },
       );
 
+      // The spend, request by request, in front of the operator watching
+      // the log: cache reads should dominate input on a warm loop, and a
+      // search count past two is the prompt's search discipline slipping.
+      const { usage } = response;
+      const searches = usage.server_tool_use?.web_search_requests ?? 0;
+      console.log(
+        `[content] ${request.topic} tokens: in ${usage.input_tokens} uncached + ${usage.cache_read_input_tokens ?? 0} cached (${usage.cache_creation_input_tokens ?? 0} written), out ${usage.output_tokens}${searches > 0 ? `, searches ${searches}` : ""}`,
+      );
+
       const submission = response.content.find(
         (block): block is Anthropic.ToolUseBlock =>
           block.type === "tool_use" && block.name === SUBMIT_ROUND_TOOL_NAME,
@@ -228,6 +238,20 @@ export function createClaudeRoundGenerator(
             `[content] ${request.topic} attempt ${attempt}/${attempts} rejected: ${parsed.reason}`,
           );
           retryNote = parsed.reason;
+          playerMessage = "The AI could not come up with a usable round.";
+          continue;
+        }
+
+        // The bank refuses duplicates too, but only exact ones and only at
+        // its own door. Caught here, "the same round under another spelling"
+        // costs neither a search, a download nor a stored image — and the
+        // retry can name the collision instead of shrugging.
+        const duplicate = findDuplicate(parsed.texts, request.exclude, request.excludeAliases);
+        if (duplicate) {
+          console.warn(
+            `[content] ${request.topic} attempt ${attempt}/${attempts} duplicate: "${parsed.subject}" — "${duplicate.candidate}" is already banked as "${duplicate.banked}"`,
+          );
+          retryNote = `"${parsed.subject}" is already in the bank — players call it "${duplicate.banked}", which is on the off-limits list.`;
           playerMessage = "The AI could not come up with a usable round.";
           continue;
         }

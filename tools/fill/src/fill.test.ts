@@ -125,17 +125,22 @@ describe("filling", () => {
 
   it("asks for every language at once, with the shelf's answers excluded", async () => {
     const generator = generatorOf(imageRound("Japan"));
+    const bhutan = banked("flags", "Bhutan");
+    bhutan.texts.en!.aliases = ["Druk Yul"];
     const { filler, repository, images } = await harness({
       generator,
       topics: ["flags"],
-      seed: [banked("flags", "Bhutan")],
+      seed: [bhutan],
     });
 
     const outcome = await filler.fillOnce(NEVER);
 
     expect(outcome).toMatchObject({ kind: "filled", topic: "flags", subject: "Japan", level: 2 });
     expect(generator.requests[0]).toMatchObject({ number: 2, languages: ["en", "de"] });
-    expect(generator.requests[0]?.exclude).toContain("Bhutan");
+    // Banked in two languages under one name; the prompt's list says it once.
+    expect(generator.requests[0]?.exclude).toEqual(["Bhutan"]);
+    // The aliases ride along for the duplicate check, unshown in the prompt.
+    expect(generator.requests[0]?.excludeAliases).toContain("Druk Yul");
     // The picture is stored, and both languages land on the one round.
     expect(images.saved).toHaveLength(1);
     expect(await repository.count("flags", "en")).toBe(2);

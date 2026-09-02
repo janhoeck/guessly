@@ -341,4 +341,13 @@ describe("count and answers", () => {
     expect(await repo.answers("flags")).toEqual(["Frankreich", "France"]);
     expect(await repo.answers("music")).toEqual([]);
   });
+
+  /** The rest of the exclusion: what those answers are also called. */
+  it("lists every alias a topic holds, in every language", async () => {
+    await repo.insert(round(), NOON, false);
+    await repo.insert(round({ topic: "landmarks" }), NOON, false);
+
+    expect(await repo.aliases("flags")).toEqual(["Königreich Bhutan", "Kingdom of Bhutan"]);
+    expect(await repo.aliases("music")).toEqual([]);
+  });
 });

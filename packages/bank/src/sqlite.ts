@@ -325,6 +325,19 @@ export function createSqliteRoundRepository(path: string): RoundRepository {
       return rows.map((row) => row.answer);
     },
 
+    async aliases(topic) {
+      const rows = open()
+        .prepare(
+          `SELECT round_texts.aliases AS aliases
+             FROM rounds
+             JOIN round_texts ON round_texts.round_id = rounds.id
+            WHERE rounds.topic = ?
+            ORDER BY rounds.id, round_texts.language`,
+        )
+        .all(topic) as { aliases: string }[];
+      return rows.flatMap((row) => JSON.parse(row.aliases) as string[]);
+    },
+
     async close() {
       db?.close();
       db = null;

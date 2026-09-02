@@ -24,6 +24,8 @@
         "CORS_ORIGINS",
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_MODEL",
+        "DATA_DIR",
+        "PUBLIC_BASE_URL",
         "NEXT_PUBLIC_SOCKET_URL"
       ]
     },
@@ -36,6 +38,8 @@
         "CORS_ORIGINS",
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_MODEL",
+        "DATA_DIR",
+        "PUBLIC_BASE_URL",
         "NEXT_PUBLIC_SOCKET_URL"
       ]
     },

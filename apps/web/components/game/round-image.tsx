@@ -17,16 +17,20 @@ import * as React from "react"
  * `broken` is per-picture and is reset by identity: the caller keys this on the
  * URL, so a new round gets a new component rather than one carrying the last
  * round's failure.
+ *
+ * It is sized by the stage and never the other way round — see the class below.
  */
 function RoundImage({ url }: { url: string }) {
   const [broken, setBroken] = React.useState(false)
 
   if (broken) {
     return (
-      <p className="max-w-sm text-center text-sm text-muted-foreground">
-        This picture would not load. Everybody is looking at the same blank
-        space — sit this one out.
-      </p>
+      <div className="absolute inset-0 grid place-items-center p-6">
+        <p className="max-w-sm text-center text-sm text-muted-foreground">
+          This picture would not load. Everybody is looking at the same blank
+          space — sit this one out.
+        </p>
+      </div>
     )
   }
 
@@ -39,7 +43,19 @@ function RoundImage({ url }: { url: string }) {
       alt=""
       referrerPolicy="no-referrer"
       onError={() => setBroken(true)}
-      className="max-h-full max-w-full rounded-lg object-contain"
+      /*
+       * Taken out of flow and told to fill the stage: `object-contain` then
+       * fits the picture inside that box, so a tall photograph is letterboxed
+       * instead of setting the box's height and being cropped by it. The
+       * earlier `max-h-full` could not do this — a percentage measured against
+       * a box the image itself was sizing resolves to the image, which is why
+       * pictures kept spilling out of the frame.
+       *
+       * The padding is on the image rather than on the stage around it: a
+       * replaced element fits its *content* box, so `p-3` is breathing room the
+       * picture actually honours.
+       */
+      className="absolute inset-0 size-full rounded-lg object-contain p-3"
     />
   )
 }

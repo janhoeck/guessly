@@ -43,6 +43,19 @@ export interface Config {
   /** Rounds are built by Claude, so there is no game without this. */
   anthropicApiKey: string;
   anthropicModel: string;
+  /**
+   * Where the round bank lives: the SQLite file and the image files. Lobby
+   * state stays in memory and dies with the process; the bank is the part
+   * that is supposed to survive it, so a deploy must put this on a disk that
+   * outlives the container.
+   */
+  dataDir: string;
+  /**
+   * The origin a *player's browser* reaches this server on. Banked images are
+   * served from here (`/img/...`), and the URL goes out in the snapshot, so
+   * localhost is only right on localhost.
+   */
+  publicBaseUrl: string;
 }
 
 /**
@@ -87,5 +100,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 
   const anthropicModel = (env.ANTHROPIC_MODEL ?? DEFAULT_MODEL).trim() || DEFAULT_MODEL;
 
-  return { port, allowedOrigins, anthropicApiKey, anthropicModel };
+  // Resolved against this module for the same reason as the .env file above:
+  // the default has to land on apps/game/data whatever directory the server
+  // was started from. `src/` and `dist/` are both one level under the package.
+  const dataDir =
+    (env.DATA_DIR ?? "").trim() || fileURLToPath(new URL("../data", import.meta.url));
+
+  const publicBaseUrl = ((env.PUBLIC_BASE_URL ?? "").trim() || `http://localhost:${port}`)
+    .replace(/\/+$/, "");
+  if (!/^https?:\/\//.test(publicBaseUrl)) {
+    throw new Error(
+      `PUBLIC_BASE_URL must be an origin like https://game.example.com, got ${JSON.stringify(env.PUBLIC_BASE_URL)}`,
+    );
+  }
+
+  return { port, allowedOrigins, anthropicApiKey, anthropicModel, dataDir, publicBaseUrl };
 }

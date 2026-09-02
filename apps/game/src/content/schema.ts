@@ -52,7 +52,7 @@ export const SUBMIT_ROUND_INPUT_SCHEMA = {
       type: "array",
       items: { type: "string" },
       description:
-        "Image rounds only. Up to three direct https URLs to an image file, best first, on hosts that allow hotlinking. Empty array on a lyrics round.",
+        "Image rounds only. Up to five direct https URLs to an image file, best first, on hosts that serve files to anyone. Empty array on a lyrics round.",
     },
     lyrics_snippet: {
       type: "string",
@@ -70,7 +70,9 @@ const ANSWER_MAX_LENGTH = 80;
 const QUESTION_MAX_LENGTH = 140;
 const SUBJECT_MAX_LENGTH = 160;
 const MAX_ALIASES = 12;
-const MAX_IMAGE_URLS = 3;
+/** Five since the bank: every extra candidate is another chance the download
+ *  pipeline saves the round, and the failed ones cost one request each. */
+const MAX_IMAGE_URLS = 5;
 /** Long enough for five lines of paraphrase, short enough not to be a lyric sheet. */
 const SNIPPET_MAX_LENGTH = 600;
 const SNIPPET_MIN_LENGTH = 20;

@@ -94,7 +94,15 @@ function GameRoom({ code }: { code: string }) {
       </header>
 
       <div className="grid flex-1 gap-6 lg:grid-cols-[minmax(0,1fr)_18rem] lg:items-start">
-        <div className="flex min-h-[26rem] flex-col">
+        {/* A fixed height rather than a minimum, and it is the whole point of
+            the game screen's layout: the panel is the same box in every phase
+            and for every round, so the countdown does not resize into the
+            round, a two-line question does not move the guess field, and a
+            portrait photograph cannot push it off the bottom of the screen.
+            Everything variable is absorbed inside, by the media area.
+            `9rem` is the chrome above and below — the header, the gap and the
+            page padding — so the panel fills the viewport and stops there. */}
+        <div className="flex h-[clamp(24rem,calc(100dvh-9rem),46rem)] flex-col">
           {state.round === null ? (
             <section className="grid flex-1 place-items-center rounded-xl bg-card p-8 ring-1 ring-foreground/10">
               <p className="text-sm text-muted-foreground">Setting the round up…</p>

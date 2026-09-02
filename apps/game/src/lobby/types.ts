@@ -52,6 +52,13 @@ export interface RoundRecord {
   revealed: boolean;
   /** Stamped at the reveal; when the next countdown opens. */
   intermissionEndsAt: number | null;
+  /**
+   * The topic drawn early for the round after this one, so its content can be
+   * sourced while this round is still on screen. `advance` reuses it rather
+   * than drawing again — the prefetched content has to be about the round that
+   * actually opens. Null until `prepareNext` draws it.
+   */
+  nextTopic: TopicId | null;
 }
 
 export interface LobbyRecord {

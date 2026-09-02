@@ -295,55 +295,84 @@ describe("starting a round", () => {
     }
   });
 
-  it("sends everybody back to the lobby when the round cannot be built", async () => {
+  it("retries a failed round on a fresh topic before giving up", async () => {
     const { host, guest } = await readyToStart();
     await emit(host, "lobby:start");
     await settle();
 
+    // First failure: the round is reopened, not abandoned — the room sees a
+    // fresh countdown and hears no round:failed.
+    const reopened = nextEvent<LobbyState>(host, "lobby:state");
+    content.fail("None of the pictures the AI picked would load.");
+    expect((await reopened).status).toBe("countdown");
+    await settle();
+
+    // The retry asked the source again; this time the content arrives.
+    const live = stateWhere(guest, (state) => state.status === "in_round");
+    content.deliver({
+      content: A_PICTURE,
+      answer: "Bhutan",
+      aliases: [],
+      subject: "Flag of Bhutan",
+    });
+    expect((await live).round?.content).toEqual(A_PICTURE);
+  });
+
+  it("sends everybody back to the lobby when the retry fails too", async () => {
+    const { host, guest } = await readyToStart();
+    await emit(host, "lobby:start");
+    await settle();
+
+    content.fail("None of the pictures the AI picked would load.");
+    await settle();
+
     const explained = nextEvent<{ message: string }>(guest, "round:failed");
-    const state = nextEvent<LobbyState>(host, "lobby:state");
+    const state = stateWhere(host, (snapshot) => snapshot.status === "lobby");
     content.fail("None of the pictures the AI picked would load.");
 
     expect((await explained).message).toBe("None of the pictures the AI picked would load.");
-    expect((await state).status).toBe("lobby");
     expect((await state).round).toBeNull();
   });
 });
 
+/**
+ * Host and guest both in, with round one live and genuinely open.
+ *
+ * The clock moves forward here, and that is the point of this helper. Up to
+ * the delivery the store's pinned instant is well in the past, so the
+ * countdown's deadline is already behind the runner's real clock and fires on
+ * the next tick — the same trick the rest of this file relies on. A round
+ * that has to be guessed at cannot be stamped that way: its deadline has to
+ * be somewhere ahead, or the reveal races the first guess.
+ *
+ * The moment round one goes live the runner also asks the source for round
+ * two, so from here on the stub's pending request is the *prefetch* — a
+ * `deliver` or `fail` now answers round two, not round one.
+ */
+async function playing() {
+  const table = await readyToStart();
+  await emit(table.host, "lobby:start");
+  await settle();
+
+  // Awaited on both sockets, not just the host's: the delivery snapshot goes
+  // to the whole room, and a test that only waits for one copy of it goes on
+  // to mistake the other for whatever it does next.
+  const live = [
+    nextEvent<LobbyState>(table.host, "lobby:state"),
+    nextEvent<LobbyState>(table.guest, "lobby:state"),
+  ];
+  clock = Date.now();
+  content.deliver({
+    content: A_PICTURE,
+    answer: "Bhutan",
+    aliases: ["Kingdom of Bhutan"],
+    subject: "Flag of Bhutan",
+  });
+  await Promise.all(live);
+  return table;
+}
+
 describe("guessing", () => {
-  /**
-   * Host and guest both in, with round one live and genuinely open.
-   *
-   * The clock moves forward here, and that is the point of this helper. Up to
-   * the delivery the store's pinned instant is well in the past, so the
-   * countdown's deadline is already behind the runner's real clock and fires on
-   * the next tick — the same trick the rest of this file relies on. A round
-   * that has to be guessed at cannot be stamped that way: its deadline has to
-   * be somewhere ahead, or the reveal races the first guess.
-   */
-  async function playing() {
-    const table = await readyToStart();
-    await emit(table.host, "lobby:start");
-    await settle();
-
-    // Awaited on both sockets, not just the host's: the delivery snapshot goes
-    // to the whole room, and a test that only waits for one copy of it goes on
-    // to mistake the other for whatever it does next.
-    const live = [
-      nextEvent<LobbyState>(table.host, "lobby:state"),
-      nextEvent<LobbyState>(table.guest, "lobby:state"),
-    ];
-    clock = Date.now();
-    content.deliver({
-      content: A_PICTURE,
-      answer: "Bhutan",
-      aliases: ["Kingdom of Bhutan"],
-      subject: "Flag of Bhutan",
-    });
-    await Promise.all(live);
-    return table;
-  }
-
   it("tells the guesser they were wrong and tells nobody else anything", async () => {
     const { host, guest } = await playing();
 
@@ -459,6 +488,66 @@ describe("guessing", () => {
     expect(state.round).toMatchObject({ number: 2, content: null, results: [] });
     // And the scores from round one came with them.
     expect(state.players[0]?.score).toBe(ROUND_MAX_POINTS);
+  });
+});
+
+describe("prefetching the next round", () => {
+  const ROUND_TWO: SourcedRound = {
+    content: {
+      kind: "image",
+      question: "Which country's flag is this?",
+      imageUrl: "https://example.test/flag-two.png",
+    },
+    answer: "Japan",
+    aliases: ["Nippon"],
+    subject: "Flag of Japan",
+  };
+
+  /** Round one answered by everybody, with the clock wound back so the reveal,
+   *  the intermission and the next countdown all fire at once. */
+  async function playRoundOneOut(host: ClientSocket, guest: ClientSocket) {
+    await emit(host, "round:guess", { roundNumber: 1, guess: "Bhutan" });
+    clock = Date.now() - INTERMISSION_DURATION_MS;
+    await emit(guest, "round:guess", { roundNumber: 1, guess: "Bhutan" });
+  }
+
+  it("plays round two from content fetched during round one", async () => {
+    const { host, guest } = await playing();
+    // Round two's request went out the moment round one went live; answer it
+    // while round one is still on everybody's screen.
+    content.deliver(ROUND_TWO);
+    await settle();
+
+    const live = stateWhere(
+      guest,
+      (state) => state.status === "in_round" && state.round?.number === 2,
+    );
+    await playRoundOneOut(host, guest);
+
+    expect((await live).round?.content).toEqual(ROUND_TWO.content);
+  });
+
+  it("builds round two against its countdown when the prefetch failed", async () => {
+    const { host, guest } = await playing();
+    content.fail("the prefetch went wrong");
+    await settle();
+
+    const opened = stateWhere(
+      guest,
+      (state) => state.status === "countdown" && state.round?.number === 2,
+    );
+    await playRoundOneOut(host, guest);
+    await opened;
+    // The fallback request has gone out by now; answering it is what makes the
+    // round — the failed prefetch cost nothing but the head start.
+    await settle();
+
+    const live = stateWhere(
+      guest,
+      (state) => state.status === "in_round" && state.round?.number === 2,
+    );
+    content.deliver(ROUND_TWO);
+    expect((await live).round?.content).toEqual(ROUND_TWO.content);
   });
 });
 

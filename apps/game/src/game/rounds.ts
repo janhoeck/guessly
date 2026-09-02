@@ -1,5 +1,9 @@
 import type { LobbyState } from "@guessly/protocol";
-import { RoundSourceError, type RoundContentSource } from "../content/source.js";
+import {
+  RoundSourceError,
+  type RoundContentSource,
+  type SourcedRound,
+} from "../content/source.js";
 import type { LobbyStore, RoundRequest } from "../lobby/store.js";
 
 /**
@@ -51,6 +55,18 @@ interface Running {
    * both fire and only one of them counts.
    */
   finish: (() => void) | null;
+  /**
+   * Content for the round after the one on screen, fetched while it plays so
+   * the intermission is not spent waiting on the network. Resolves null when
+   * the fetch failed — never rejects — and `play` then builds the round
+   * against its countdown exactly as if nothing had been prefetched.
+   */
+  prefetch: { number: number; sourced: Promise<SourcedRound | null> } | null;
+  /**
+   * The round number that has already been given its one second chance on a
+   * fresh topic, so a build that fails twice ends the game instead of looping.
+   */
+  retriedNumber: number | null;
 }
 
 export function createRoundRunner(deps: RoundRunnerDeps): RoundRunner {
@@ -64,6 +80,7 @@ export function createRoundRunner(deps: RoundRunnerDeps): RoundRunner {
     for (const timer of current.timers) clearTimeout(timer);
     current.timers.clear();
     current.finish = null;
+    current.prefetch = null;
   };
 
   /** Ends this lobby's run only if it is still the run that started it. */
@@ -97,12 +114,22 @@ export function createRoundRunner(deps: RoundRunnerDeps): RoundRunner {
       after(run, request.startsAt, resolve);
     });
 
+    // Sourced while the previous round was on screen, when there was one to
+    // source behind. A prefetch that failed resolves null instead of
+    // rejecting, and the round is then built against the countdown as if it
+    // had never been asked for — the prefetch is a head start, not a new way
+    // for a round to fail.
+    const held = run.prefetch?.number === request.number ? run.prefetch : null;
+    run.prefetch = null;
+    const content = held
+      ? held.sourced.then(
+          (early) => early ?? deps.source.build(request, run.controller.signal),
+        )
+      : deps.source.build(request, run.controller.signal);
+
     void (async () => {
       try {
-        const [sourced] = await Promise.all([
-          deps.source.build(request, run.controller.signal),
-          countdown,
-        ]);
+        const [sourced] = await Promise.all([content, countdown]);
 
         const state = deps.store.deliverRound(
           request.code,
@@ -135,6 +162,26 @@ export function createRoundRunner(deps: RoundRunnerDeps): RoundRunner {
 
         run.finish = end;
         after(run, endsAt, end);
+
+        // The round is live, so its twenty seconds are spent fetching the next
+        // one — by the time the intermission ends the content is usually
+        // already in hand and the countdown is the only wait left. A winner or
+        // a reaped lobby makes this a wasted call; that is bounded at one.
+        const next = deps.store.prepareNext(request.code, request.number);
+        if (next) {
+          run.prefetch = {
+            number: next.number,
+            sourced: deps.source.build(next, run.controller.signal).catch((error) => {
+              if (!run.controller.signal.aborted) {
+                console.warn(
+                  `[game] ${next.code} round ${next.number} prefetch failed; will build against the countdown`,
+                  error,
+                );
+              }
+              return null;
+            }),
+          };
+        }
       } catch (error) {
         // Cancelled rather than failed: the lobby is already gone or has
         // started something else, and there is nobody left to apologise to.
@@ -147,6 +194,29 @@ export function createRoundRunner(deps: RoundRunnerDeps): RoundRunner {
           `[game] ${request.code} round ${request.number} failed${detail ? `: ${detail}` : ""}`,
           error,
         );
+
+        // One fresh topic before the game is given up on: the commonest build
+        // failure is a single topic with nothing sourceable left, and the next
+        // shelf over is usually a stocked one in the bank. The players see the
+        // countdown start again, which is a hiccup; being dumped back to the
+        // lobby on round eight is a catastrophe.
+        if (run.retriedNumber !== request.number) {
+          run.retriedNumber = request.number;
+          const reopened = deps.store.reopenRound(
+            request.code,
+            request.number,
+            request.topic,
+          );
+          if (reopened) {
+            console.log(
+              `[game] ${request.code} round ${request.number}: retrying on ${reopened.request.topic}`,
+            );
+            deps.broadcast(reopened.state);
+            play(run, reopened.request);
+            return;
+          }
+        }
+
         const state = deps.store.abandonRound(request.code, request.number);
         if (state) {
           deps.broadcast(state);
@@ -195,6 +265,8 @@ export function createRoundRunner(deps: RoundRunnerDeps): RoundRunner {
         timers: new Set(),
         number: request.number,
         finish: null,
+        prefetch: null,
+        retriedNumber: null,
       };
       running.set(request.code, run);
       play(run, request);

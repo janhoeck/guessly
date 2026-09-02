@@ -697,6 +697,116 @@ describe("the round loop", () => {
   });
 });
 
+describe("reopening a failed round", () => {
+  it("gives the same round number a fresh countdown on a different topic", () => {
+    const { store, code, request, advance, pickTopicAt } = counting();
+    advance(5_000);
+    // Index zero would re-draw the failed topic from the full list; the
+    // avoided list starts one further over.
+    pickTopicAt(0);
+
+    const reopened = store.reopenRound(code, request.number, request.topic);
+    expect(reopened?.request.number).toBe(request.number);
+    expect(reopened?.request.topic).not.toBe(request.topic);
+    expect(reopened?.request.startsAt).toBe(NOON + 5_000 + COUNTDOWN_DURATION_MS);
+    expect(reopened?.state.status).toBe("countdown");
+    expect(reopened?.state.round).toMatchObject({
+      number: request.number,
+      topic: reopened?.request.topic,
+      content: null,
+    });
+  });
+
+  it("keeps the topic when it is the only one the lobby plays", () => {
+    const { store, code, host } = lobbyOf(2);
+    unwrap(store.setTopics(code, host.playerId, ["flags"]));
+    unwrap(store.start(code, host.playerId));
+
+    expect(store.reopenRound(code, 1, "flags")?.request.topic).toBe("flags");
+  });
+
+  it("carries the game's used answers into the retried request", () => {
+    const { store, code, host, advance } = playing();
+    store.guess(code, host.playerId, 1, "Bhutan");
+    advance(ROUND_DURATION_MS);
+    store.revealRound(code, 1);
+    advance(INTERMISSION_DURATION_MS);
+    const next = store.advance(code, 1);
+    if (next?.kind !== "next") throw new Error("expected another round");
+
+    const reopened = store.reopenRound(code, 2, next.request.topic);
+    expect(reopened?.request.exclude).toEqual(["Bhutan"]);
+  });
+
+  it("refuses a round that is not on its countdown", () => {
+    const midRound = playing();
+    expect(midRound.store.reopenRound(midRound.code, 1, "flags")).toBeNull();
+
+    const wrongNumber = counting();
+    expect(wrongNumber.store.reopenRound(wrongNumber.code, 2, "flags")).toBeNull();
+  });
+});
+
+describe("prefetching the next round", () => {
+  it("describes the round after the one on screen, current answer excluded", () => {
+    const { store, code, pickTopicAt } = playing();
+    pickTopicAt(1);
+
+    const request = store.prepareNext(code, 1);
+    expect(request).toMatchObject({
+      code,
+      number: 2,
+      topic: ALL_TOPIC_IDS[1],
+      // Bhutan is not in usedAnswers until the reveal, but serving it again
+      // next round would still be serving it twice.
+      exclude: ["Bhutan"],
+    });
+  });
+
+  it("keeps the answers of earlier rounds on the exclusion list", () => {
+    const { store, code, host, advance } = playing();
+    store.guess(code, host.playerId, 1, "Bhutan");
+    advance(ROUND_DURATION_MS);
+    store.revealRound(code, 1);
+    advance(INTERMISSION_DURATION_MS);
+    const next = store.advance(code, 1);
+    if (next?.kind !== "next") throw new Error("expected another round");
+    advance(COUNTDOWN_DURATION_MS);
+    store.deliverRound(code, 2, A_PICTURE, "Japan", []);
+
+    expect(store.prepareNext(code, 2)?.exclude).toEqual(["Bhutan", "Japan"]);
+  });
+
+  it("hands the same topic to advance that it handed to the prefetch", () => {
+    const { store, code, host, advance, pickTopicAt } = playing();
+    pickTopicAt(2);
+    const prepared = store.prepareNext(code, 1);
+    // If advance drew afresh it would land here instead, and the content
+    // prefetched for `prepared.topic` would be about the wrong thing.
+    pickTopicAt(0);
+
+    store.guess(code, host.playerId, 1, "Bhutan");
+    advance(ROUND_DURATION_MS);
+    store.revealRound(code, 1);
+    advance(INTERMISSION_DURATION_MS);
+
+    const advanced = store.advance(code, 1);
+    if (advanced?.kind !== "next") throw new Error("expected another round");
+    expect(advanced.request.topic).toBe(prepared?.topic);
+    expect(advanced.request.topic).toBe(ALL_TOPIC_IDS[2]);
+  });
+
+  it("refuses a round that is not the one being played", () => {
+    const midRound = playing();
+    expect(midRound.store.prepareNext(midRound.code, 2)).toBeNull();
+
+    // During the countdown there is no answer to exclude yet, and after the
+    // reveal the next round is about to be opened for real.
+    const stillCounting = counting();
+    expect(stillCounting.store.prepareNext(stillCounting.code, 1)).toBeNull();
+  });
+});
+
 describe("leave", () => {
   it("frees the seat immediately", () => {
     const { store, code, joiners } = lobbyOf(2);

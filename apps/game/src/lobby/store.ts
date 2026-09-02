@@ -77,7 +77,10 @@ export interface RoundRequest {
   kind: RoundKind;
   /** Answers this game has already used, so a source can avoid repeating one. */
   exclude: string[];
-  /** When the countdown reaches zero. The round may not start before it. */
+  /**
+   * When the countdown reaches zero. The round may not start before it. On a
+   * request from `prepareNext` this is only an estimate — see there.
+   */
   startsAt: number;
 }
 
@@ -148,6 +151,20 @@ export interface LobbyStore {
     aliases: string[],
   ): LobbyState | null;
   /**
+   * Describes the round *after* the one being played, so its content can be
+   * sourced while this one is still on screen instead of making the players
+   * pay the full latency behind every countdown.
+   *
+   * The topic is drawn now and remembered, and `advance` reuses it — the
+   * prefetched content has to be about the round that actually opens. The
+   * request's `exclude` already carries this round's answer, which is not in
+   * `usedAnswers` until the reveal. Its `startsAt` is only an estimate (the
+   * countdown's zero if this round runs its clock out; an early finish moves it
+   * sooner) — nothing schedules against it, because the real one is stamped by
+   * `advance`. Null when the lobby is not playing the round quoted.
+   */
+  prepareNext(code: string, number: number): RoundRequest | null;
+  /**
    * One guess, stamped when it arrived. Client timestamps are never consulted —
    * speed is the score here, so the only clock that counts is this one.
    */
@@ -160,6 +177,20 @@ export interface LobbyStore {
    * goes out. Null if the lobby has moved on from the round quoted.
    */
   advance(code: string, number: number): AdvanceResult | null;
+  /**
+   * The content could not be built, but the game need not die for it: the same
+   * round number gets a fresh countdown on a topic drawn *away* from the one
+   * that failed — the commonest reason a build fails is that one topic's well
+   * is dry, and the next shelf over is usually stocked. Falls back to the full
+   * selection when avoiding would leave nothing. Null when the lobby is not on
+   * that round's countdown any more; how often to try again is the caller's
+   * decision, not this one's.
+   */
+  reopenRound(
+    code: string,
+    number: number,
+    avoidTopic: TopicId,
+  ): { state: LobbyState; request: RoundRequest } | null;
   /** The content could not be built. The lobby goes back to being a lobby. */
   abandonRound(code: string, number: number): LobbyState | null;
   /** Intentional exit. Returns the snapshot to broadcast, or null if there is nobody left to tell. */
@@ -270,17 +301,18 @@ export function createLobbyStore(overrides: Partial<LobbyStoreDeps> = {}): Lobby
   };
 
   /**
-   * Draws a topic from the lobby's own selection. The index is clamped rather
-   * than trusted: a picker that returns nonsense should cost the round its
-   * randomness, not take the server down in the middle of a game.
+   * Draws a topic from a list. The index is clamped rather than trusted: a
+   * picker that returns nonsense should cost the round its randomness, not
+   * take the server down in the middle of a game.
    */
-  const pickTopic = (lobby: LobbyRecord): TopicId | null => {
-    const { topics } = lobby;
+  const pickFrom = (topics: readonly TopicId[]): TopicId | null => {
     if (topics.length === 0) return null;
     const raw = deps.pickIndex(topics.length);
     const index = Number.isInteger(raw) ? Math.min(Math.max(raw, 0), topics.length - 1) : 0;
     return topics[index] ?? null;
   };
+
+  const pickTopic = (lobby: LobbyRecord): TopicId | null => pickFrom(lobby.topics);
 
   /**
    * Opens a countdown for a round that does not exist yet, and describes it to
@@ -307,6 +339,7 @@ export function createLobbyStore(overrides: Partial<LobbyStoreDeps> = {}): Lobby
       results: [],
       revealed: false,
       intermissionEndsAt: null,
+      nextTopic: null,
     };
 
     lobby.status = "countdown";
@@ -561,6 +594,31 @@ export function createLobbyStore(overrides: Partial<LobbyStoreDeps> = {}): Lobby
       return toLobbyState(lobby, now);
     },
 
+    prepareNext(code, number) {
+      const found = roundInPhase(code, number, "in_round");
+      if (!found) return null;
+      const { lobby, round } = found;
+
+      const topic = pickTopic(lobby);
+      if (topic === null) return null;
+      round.nextTopic = topic;
+
+      // This round's answer joins `usedAnswers` at the reveal, which has not
+      // happened yet — without it here, the prefetch could serve it again.
+      const exclude = [...lobby.usedAnswers];
+      if (round.answer !== null) exclude.push(round.answer);
+
+      return {
+        code: lobby.code,
+        number: number + 1,
+        topic,
+        kind: topicById(topic).kind,
+        exclude,
+        startsAt:
+          (round.endsAt ?? deps.now()) + INTERMISSION_DURATION_MS + COUNTDOWN_DURATION_MS,
+      };
+    },
+
     guess(code, playerId, roundNumber, guess) {
       const refuse = (error: ErrorCode, message: string): GuessOutcome => ({
         ack: err(error, message),
@@ -632,7 +690,7 @@ export function createLobbyStore(overrides: Partial<LobbyStoreDeps> = {}): Lobby
     advance(code, number) {
       const found = roundInPhase(code, number, "intermission");
       if (!found) return null;
-      const { lobby } = found;
+      const { lobby, round } = found;
 
       const now = deps.now();
       lobby.lastActivityAt = now;
@@ -643,7 +701,9 @@ export function createLobbyStore(overrides: Partial<LobbyStoreDeps> = {}): Lobby
       const won = [...lobby.players.values()].some(
         (player) => player.score >= lobby.targetScore,
       );
-      const topic = won ? null : pickTopic(lobby);
+      // The topic `prepareNext` drew, when it was asked — the prefetched
+      // content is about that topic, so drawing afresh would orphan it.
+      const topic = won ? null : (round.nextTopic ?? pickTopic(lobby));
 
       if (topic === null) {
         // `pickTopic` returning null is unreachable — a lobby is validated to
@@ -657,6 +717,20 @@ export function createLobbyStore(overrides: Partial<LobbyStoreDeps> = {}): Lobby
 
       const request = openRound(lobby, number + 1, topic, now);
       return { kind: "next", state: toLobbyState(lobby, now), request };
+    },
+
+    reopenRound(code, number, avoidTopic) {
+      const found = roundInPhase(code, number, "countdown");
+      if (!found) return null;
+      const { lobby } = found;
+
+      const fresh = lobby.topics.filter((topic) => topic !== avoidTopic);
+      const topic = pickFrom(fresh.length > 0 ? fresh : lobby.topics);
+      if (topic === null) return null;
+
+      const now = deps.now();
+      const request = openRound(lobby, number, topic, now);
+      return { state: toLobbyState(lobby, now), request };
     },
 
     abandonRound(code, number) {

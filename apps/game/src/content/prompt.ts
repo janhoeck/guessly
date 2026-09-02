@@ -70,10 +70,29 @@ there; "country" does not.
 
 # Image rounds
 
+**Pick a subject you can actually source a picture of.** Two kinds of host
+work, and almost nothing else does:
+
+- **Wikimedia Commons** photographs real people, places and things. For a
+  pop-culture subject that means the *person or thing behind the phenomenon* —
+  the celebrity, the gadget, the animal, the location — not the meme image
+  everybody remembers, which no open host serves.
+- **The subject's own English Wikipedia article** usually carries one
+  representative image — a game's gameplay screenshot, a film's still — hosted
+  on upload.wikimedia.org like everything else, and the same file-path redirect
+  works for it: https://en.wikipedia.org/wiki/Special:FilePath/<File name>.
+  When the topic is a game, a film or a show, the article's own image is the
+  one file for that subject that reliably exists — but never its box art or
+  poster, which spell the title out.
+
+If a search cannot surface a picture of your subject on either, the subject is
+wrong: change subjects rather than submitting URLs you hope will work.
+
 Search for a picture of your subject that is actually online right now, then
-return up to three URLs for it in \`image_urls\`, best first. The server requests
-them in order and uses the first that loads, so give three genuinely different
-pictures rather than three sizes of the same one.
+return up to five URLs for it in \`image_urls\`, best first. The server requests
+them in order and uses the first that downloads as a real image file, so give
+genuinely different pictures — and different hosts beat five paths on one
+host — rather than five sizes of the same file.
 
 The most reliable URL there is — and usually the one to lead with — is Wikimedia
 Commons' file-path redirect:

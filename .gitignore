@@ -24,6 +24,9 @@ dist
 # turborepo
 .turbo
 
+# the game server's round bank (SQLite + downloaded images)
+apps/game/data/
+
 # misc
 .DS_Store
 *.pem

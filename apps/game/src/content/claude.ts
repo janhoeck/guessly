@@ -1,18 +1,22 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { RoundKind } from "@guessly/protocol";
-import type { RoundRequest } from "../lobby/store.js";
 import { NUDGE_PROMPT, SYSTEM_PROMPT, buildUserPrompt } from "./prompt.js";
 import { describeSourceFailure } from "./failure.js";
-import { firstReachableImage } from "./reachable.js";
+import { firstDownloadableImage } from "./download.js";
 import {
   SUBMIT_ROUND_INPUT_SCHEMA,
   SUBMIT_ROUND_TOOL_NAME,
   parseSubmission,
 } from "./schema.js";
-import { RoundSourceError, type RoundContentSource, type SourcedRound } from "./source.js";
+import {
+  RoundSourceError,
+  type GeneratedRound,
+  type GenerationRequest,
+  type RoundGenerator,
+} from "./source.js";
 
 /**
- * The content source, backed by Claude.
+ * The round generator, backed by Claude.
  *
  * Three things make the response safe to parse, and none of them is hoping:
  *
@@ -24,8 +28,13 @@ import { RoundSourceError, type RoundContentSource, type SourcedRound } from "./
  *    attempt is told what was wrong with the first rather than re-rolling the
  *    same dice.
  *
- * Everything here runs while the players watch the countdown, so every number
- * below is a latency budget as much as a limit.
+ * An image round leaves here as *bytes*, downloaded and verified, not as a URL
+ * to hope about later — the bank stores them and the players load the picture
+ * from this server's own origin.
+ *
+ * Most generation runs behind the bank: a background top-up, or a prefetch
+ * hidden behind the round on screen. Only a cold bank puts this in front of a
+ * countdown, so the numbers below buy reliability first and speed second.
  */
 
 /** Room for adaptive thinking plus a short structured answer. */
@@ -44,23 +53,39 @@ const MAX_SEARCHES = 4;
 /** One turn to answer, one to resume a paused search, one after a nudge. */
 const MAX_TURNS = 3;
 
-/** How many whole rounds to ask for before giving up on the topic. */
-const DEFAULT_ATTEMPTS = 2;
+/**
+ * How many whole rounds to ask for before giving up on the topic. Three since
+ * prefetching, not two: most rounds now build behind the round before them,
+ * where a named-reason retry costs the players nothing, and what a third
+ * attempt prevents is the worst screen in the game — a whole lobby dumped
+ * back to `/` because nothing would load.
+ */
+const DEFAULT_ATTEMPTS = 3;
 
-/** Wall clock for one attempt, web searches included. */
-const DEFAULT_ATTEMPT_TIMEOUT_MS = 25_000;
+/**
+ * How long one API request may take. This is the SDK's per-request timeout —
+ * an attempt can be up to MAX_TURNS requests, and the SDK retries a timed-out
+ * request once — not a wall clock for the attempt. One request can carry all
+ * MAX_SEARCHES server-side searches, which runs ten to twenty seconds
+ * routinely and tails far past that; the 25 seconds this used to be was tuned
+ * for players watching a countdown, and mostly killed prefetches that were
+ * about to succeed. A prefetched round has a whole round to arrive in, and a
+ * late round starts its clock late rather than short — finishing beats
+ * finishing fast.
+ */
+const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 
-/** A host that has not answered in this long will not save the round either. */
-const IMAGE_PROBE_TIMEOUT_MS = 4_000;
+/** A host that cannot deliver the whole file in this long will not do better later. */
+const IMAGE_DOWNLOAD_TIMEOUT_MS = 8_000;
 
 const SUBMIT_ROUND_DESCRIPTION =
   "Submit the finished round. Call this exactly once, as your final action, with the fields for the round kind you were given.";
 
-export interface ClaudeRoundSourceOptions {
+export interface ClaudeRoundGeneratorOptions {
   apiKey: string;
   model: string;
   attempts?: number;
-  attemptTimeoutMs?: number;
+  requestTimeoutMs?: number;
 }
 
 /**
@@ -84,22 +109,23 @@ function toolsFor(kind: RoundKind) {
   ];
 }
 
-export function createClaudeRoundSource(
-  options: ClaudeRoundSourceOptions,
-): RoundContentSource {
+export function createClaudeRoundGenerator(
+  options: ClaudeRoundGeneratorOptions,
+): RoundGenerator {
   const attempts = options.attempts ?? DEFAULT_ATTEMPTS;
-  const attemptTimeoutMs = options.attemptTimeoutMs ?? DEFAULT_ATTEMPT_TIMEOUT_MS;
+  const requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
 
   const client = new Anthropic({
     apiKey: options.apiKey,
-    // The SDK defaults to ten minutes. A round is twenty seconds long.
-    timeout: attemptTimeoutMs,
+    // The SDK's own default is ten minutes, which would let one hung request
+    // eat the whole prefetch window and the fallback's patience besides.
+    timeout: requestTimeoutMs,
     maxRetries: 1,
   });
 
   /** One exchange, returning the raw tool input for `parseSubmission` to judge. */
   async function ask(
-    request: RoundRequest,
+    request: GenerationRequest,
     retryNote: string | undefined,
     signal: AbortSignal,
   ): Promise<unknown> {
@@ -161,7 +187,7 @@ export function createClaudeRoundSource(
   }
 
   return {
-    async build(request, signal) {
+    async generate(request, signal) {
       /** What went wrong last time, told to the model rather than kept quiet. */
       let retryNote: string | undefined;
       let playerMessage = "The round could not be built.";
@@ -183,39 +209,52 @@ export function createClaudeRoundSource(
 
         const parsed = parseSubmission(input, request.kind);
         if (!parsed.ok) {
+          // The reason is fed back to the model *and* logged: a run of
+          // rejections in the log is the only way anyone finds out the prompt
+          // and the parser have started disagreeing about something.
+          console.warn(
+            `[content] ${request.topic} attempt ${attempt}/${attempts} rejected: ${parsed.reason}`,
+          );
           retryNote = parsed.reason;
           playerMessage = "The AI could not come up with a usable round.";
           continue;
         }
 
-        const found: Omit<SourcedRound, "content"> = {
+        const found = {
+          question: parsed.question,
           answer: parsed.answer,
           aliases: parsed.aliases,
           subject: parsed.subject,
         };
 
         if (parsed.kind === "lyrics") {
-          return {
-            ...found,
-            content: { kind: "lyrics", question: parsed.question, snippet: parsed.snippet },
-          };
+          return { kind: "lyrics", snippet: parsed.snippet, ...found } satisfies GeneratedRound;
         }
 
-        const imageUrl = await firstReachableImage(
+        const image = await firstDownloadableImage(
           parsed.imageUrls,
           signal,
-          IMAGE_PROBE_TIMEOUT_MS,
+          IMAGE_DOWNLOAD_TIMEOUT_MS,
         );
-        if (imageUrl) {
-          return { ...found, content: { kind: "image", question: parsed.question, imageUrl } };
+        if (image) {
+          return { kind: "image", image, ...found } satisfies GeneratedRound;
         }
 
-        retryNote =
-          "none of the image URLs you gave could be loaded — they were unreachable, or did not serve an image. Choose a subject with a picture on upload.wikimedia.org.";
+        console.warn(
+          `[content] ${request.topic} attempt ${attempt}/${attempts}: none of ${parsed.imageUrls.length} URLs for "${parsed.subject}" downloaded`,
+        );
+        // Each attempt is a fresh conversation, so the model does not remember
+        // what it tried — the note has to say whose pictures failed.
+        retryNote = `none of the image URLs you gave for "${parsed.subject}" could be downloaded — they were unreachable, or did not serve an actual image file. Pick a different subject that has a picture on Wikimedia Commons.`;
         playerMessage = "None of the pictures the AI picked would load.";
       }
 
-      throw new RoundSourceError(playerMessage);
+      // The player message stays vague on purpose; the log gets the last
+      // rejection verbatim, because "detail: undefined" is what an operator
+      // pastes when there is nothing better to paste.
+      throw new RoundSourceError(playerMessage, {
+        detail: retryNote && `every attempt was rejected — the last because ${retryNote}`,
+      });
     },
   };
 }

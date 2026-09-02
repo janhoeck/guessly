@@ -56,7 +56,7 @@ export function describeSourceFailure(error: unknown, model: string): SourceFail
   if (error instanceof APIConnectionTimeoutError) {
     return {
       message: "The AI took too long to answer.",
-      detail: "api.anthropic.com did not answer within the attempt's timeout",
+      detail: "api.anthropic.com did not answer within the request timeout",
     };
   }
   if (error instanceof APIConnectionError) {

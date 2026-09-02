@@ -65,15 +65,15 @@ describe("image rounds", () => {
     expect(parsed).toMatchObject({ ok: false });
   });
 
-  it("keeps at most three", () => {
+  it("keeps at most five", () => {
     const parsed = parseSubmission(
       imageSubmission({
-        image_urls: Array.from({ length: 6 }, (_, i) => `https://example.test/${i}.png`),
+        image_urls: Array.from({ length: 8 }, (_, i) => `https://example.test/${i}.png`),
       }),
       "image",
     );
     expect(parsed).toMatchObject({ ok: true });
-    expect(parsed.ok && parsed.kind === "image" && parsed.imageUrls).toHaveLength(3);
+    expect(parsed.ok && parsed.kind === "image" && parsed.imageUrls).toHaveLength(5);
   });
 
   it("dedupes the aliases and never repeats the answer among them", () => {

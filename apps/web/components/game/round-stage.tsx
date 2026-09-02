@@ -61,25 +61,31 @@ function RoundStage({
         </h1>
       )}
 
-      {/* Capped rather than left to the picture's own size: everyone is looking
-          at the same thing at the same time, and a portrait photograph that
-          pushes the clock below the fold is a round some players cannot see. */}
-      <div className="grid max-h-[45vh] min-h-56 flex-1 place-items-center overflow-hidden rounded-lg bg-background p-4 ring-1 ring-foreground/10">
+      {/* The one part of the panel that gives. It takes whatever height is left
+          over — a question that wraps to two lines, or the reveal replacing the
+          clock and the field, shrinks this box and moves nothing else — and
+          what goes inside is fitted to the box rather than allowed to set it.
+          `min-h-0` is load-bearing: a flex item refuses to shrink below its
+          content by default, which is how a tall picture used to push the guess
+          field down the page. */}
+      <div className="relative min-h-0 flex-1 overflow-hidden rounded-lg bg-background ring-1 ring-foreground/10">
         {content?.kind === "image" && (
           <RoundImage key={content.imageUrl} url={content.imageUrl} />
         )}
         {content?.kind === "lyrics" && (
-          <blockquote className="max-w-xl px-2 text-center">
-            <p className="font-heading text-xl leading-relaxed whitespace-pre-line text-balance sm:text-2xl">
-              {content.snippet}
-            </p>
-            {/* Said out loud rather than quietly assumed: these are not the
-                real words, and a player who knows the song should know why it
-                does not scan. */}
-            <footer className="mt-5 text-xs tracking-[0.2em] text-muted-foreground uppercase">
-              Lyrics, paraphrased
-            </footer>
-          </blockquote>
+          <div className="absolute inset-0 grid place-items-center p-6">
+            <blockquote className="max-w-xl text-center">
+              <p className="font-heading text-xl leading-relaxed whitespace-pre-line text-balance sm:text-2xl">
+                {content.snippet}
+              </p>
+              {/* Said out loud rather than quietly assumed: these are not the
+                  real words, and a player who knows the song should know why it
+                  does not scan. */}
+              <footer className="mt-5 text-xs tracking-[0.2em] text-muted-foreground uppercase">
+                Lyrics, paraphrased
+              </footer>
+            </blockquote>
+          </div>
         )}
       </div>
 

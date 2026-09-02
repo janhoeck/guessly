@@ -27,8 +27,17 @@ export interface RoundContentSource {
  * api.anthropic.com" is not a thing to tell five people waiting for a picture.
  */
 export class RoundSourceError extends Error {
-  constructor(message: string, cause?: unknown) {
-    super(message, { cause });
+  /**
+   * The operator's half of the same failure: what is actually wrong, named
+   * plainly enough to act on. Undefined when the message already says
+   * everything there is to say — a round the model would not write has no
+   * second explanation, but a request the API turned down does.
+   */
+  readonly detail: string | undefined;
+
+  constructor(message: string, options: { cause?: unknown; detail?: string } = {}) {
+    super(message, { cause: options.cause });
     this.name = "RoundSourceError";
+    this.detail = options.detail;
   }
 }

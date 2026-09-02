@@ -1,3 +1,38 @@
+import { fileURLToPath } from "node:url";
+
+/**
+ * Read `apps/game/.env` into `process.env`, if there is one.
+ *
+ * Nothing else does this. `tsx` and `node` both leave `.env` alone unless they
+ * are told otherwise, so without this call the file the error below tells you to
+ * create is a file nothing ever opens.
+ *
+ * The path is resolved against this module rather than the working directory,
+ * so the server finds it whether it was started by turbo from the package, by
+ * `node apps/game/dist/index.js` from the repo root, or by an editor's run
+ * button. `src/` and `dist/` are both one level under the package, so the same
+ * relative path works before and after a build.
+ *
+ * **A real environment variable wins over the file.** That is Node's own rule
+ * for `loadEnvFile` and it is the right one here: the file is a local
+ * convenience, and a deploy that sets `ANTHROPIC_API_KEY` properly must not
+ * have it quietly replaced by whatever a checked-out `.env` happens to say.
+ */
+export function loadEnvFile(): void {
+  const path = fileURLToPath(new URL("../.env", import.meta.url));
+  try {
+    process.loadEnvFile(path);
+  } catch (error) {
+    // No file at all is the normal case in production, where the variables are
+    // set for real. Anything else — unreadable, malformed — is worth saying out
+    // loud, but it is not fatal on its own: what matters is whether the
+    // environment ends up with enough in it, and loadConfig decides that.
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      console.warn(`[game] ignoring ${path}:`, error);
+    }
+  }
+}
+
 export interface Config {
   port: number;
   /**

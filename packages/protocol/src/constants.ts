@@ -2,6 +2,15 @@
 export const ROOM_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 export const ROOM_CODE_LENGTH = 5;
 
+const ROOM_CODE_PATTERN = new RegExp(`^[${ROOM_CODE_ALPHABET}]{${ROOM_CODE_LENGTH}}$`);
+
+/**
+ * Is this shaped like a code the server could have issued? Shared rather than
+ * rewritten per route, so every page that has to 404 on a typo refuses exactly
+ * the same set of strings.
+ */
+export const isRoomCode = (value: string): boolean => ROOM_CODE_PATTERN.test(value);
+
 export const MAX_PLAYERS_PER_LOBBY = 12;
 
 /** Guessing alone is not a party game, so the host cannot start on their own. */
@@ -22,6 +31,33 @@ export const MAX_TARGET_SCORE = 500;
 
 /** Players have this long to type a guess once the content is shown. */
 export const ROUND_DURATION_MS = 20_000;
+
+/**
+ * What a correct answer is worth the instant the content appears, and what it
+ * is worth on the buzzer. Points fall linearly between them: speed is what
+ * separates players, but being right is never worth nothing.
+ *
+ * The spread is deliberately narrow against DEFAULT_TARGET_SCORE. Perfect play
+ * takes five rounds and slow play takes twenty, which is the length a party
+ * game wants to be — a curve topping out near the target would make round one
+ * the whole game.
+ */
+export const ROUND_MAX_POINTS = 20;
+export const ROUND_MIN_POINTS = 5;
+
+/**
+ * How long the answer and the standings stay up before the next round's
+ * countdown opens. Long enough to read who beat you to it, short enough that
+ * nobody starts a conversation.
+ */
+export const INTERMISSION_DURATION_MS = 5_000;
+
+/**
+ * The longest guess worth reading. The content source is already held to an
+ * answer short enough to type in a few seconds, so anything past this is
+ * somebody pasting an essay into the field.
+ */
+export const GUESS_MAX_LENGTH = 80;
 
 /**
  * The beat between "start" and the first round: long enough for everybody to

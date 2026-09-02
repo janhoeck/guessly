@@ -4,6 +4,7 @@ import { toast } from "sonner"
 import {
   err,
   type Ack,
+  type GuessResult,
   type LobbyState,
   type TopicId,
 } from "@guessly/protocol"
@@ -29,6 +30,13 @@ import { getSocket } from "@/lib/socket"
 
 /** Which request is in flight, so the right button can show it. */
 export type LobbyPending = "create" | "join" | "start" | null
+
+/**
+ * What came back from a guess, or null when nothing did — the round had already
+ * closed, or the server never answered. Either way the player has been told, and
+ * null exists so the field can stop waiting rather than sit disabled forever.
+ */
+export type GuessOutcome = GuessResult | null
 
 export interface LobbySnapshot {
   /** The server's snapshot, or null when this tab is not in a lobby. */
@@ -270,6 +278,28 @@ export const lobbyActions = {
       guard((result) => {
         set({ pending: null })
         if (!result.ok) toast.error(result.message)
+      })
+    )
+  },
+
+  /**
+   * One guess. The result goes to the caller rather than into the snapshot,
+   * because a miss is the only thing in this game the server tells exactly one
+   * person — and the field that has to clear and shake is the one that sent it.
+   */
+  guess(roundNumber: number, text: string, settle: (outcome: GuessOutcome) => void): void {
+    getSocket().emit(
+      "round:guess",
+      { roundNumber, guess: text },
+      guard<GuessResult>((result) => {
+        if (!result.ok) {
+          // A guess typed as the clock ran out is the common one here, and it
+          // is worth saying rather than swallowing.
+          toast.error(result.message)
+          settle(null)
+          return
+        }
+        settle(result.data)
       })
     )
   },

@@ -5,6 +5,7 @@ import {
   type Ack,
   type ClientToServerEvents,
   type CreateLobbyResult,
+  type GuessResult,
   type InterServerEvents,
   type JoinLobbyResult,
   type LobbyState,
@@ -16,7 +17,14 @@ import type { RoundContentSource } from "../content/source.js";
 import { createRoundRunner } from "../game/rounds.js";
 import type { LobbyStore } from "../lobby/store.js";
 import { createRateLimiter, type RateLimiter } from "./rate-limit.js";
-import { parseCreate, parseJoin, parseResume, parseSetTarget, parseSetTopics } from "./validate.js";
+import {
+  parseCreate,
+  parseGuess,
+  parseJoin,
+  parseResume,
+  parseSetTarget,
+  parseSetTopics,
+} from "./validate.js";
 
 export type GameServer = Server<
   ClientToServerEvents,
@@ -229,6 +237,31 @@ export function registerSocketHandlers(
         broadcast(store.snapshot(seat.data.lobbyCode));
         runner.begin(started.data);
         return ok({});
+      }),
+    );
+
+    socket.on("round:guess", (payload, ack) =>
+      run<GuessResult>(ack, limiter, () => {
+        const seat = requireSeat(socket);
+        if (!seat.ok) return seat;
+        const parsed = parseGuess(payload);
+        if (!parsed.ok) return parsed;
+
+        const outcome = store.guess(
+          seat.data.lobbyCode,
+          seat.data.playerId,
+          parsed.data.roundNumber,
+          parsed.data.guess,
+        );
+        // Null for every wrong guess: a miss changes nothing anybody else can
+        // see, so the room hears nothing about it.
+        broadcast(outcome.state);
+        // The store has decided there is nobody left to wait for. The clock
+        // that would otherwise run the round out belongs to the runner.
+        if (outcome.complete) {
+          runner.finishEarly(seat.data.lobbyCode, parsed.data.roundNumber);
+        }
+        return outcome.ack;
       }),
     );
 

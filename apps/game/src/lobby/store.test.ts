@@ -3,12 +3,15 @@ import {
   COUNTDOWN_DURATION_MS,
   EMPTY_LOBBY_TTL_MS,
   IDLE_LOBBY_TTL_MS,
+  INTERMISSION_DURATION_MS,
   LOBBY_DISCONNECT_GRACE_MS,
   MAX_PLAYERS_PER_LOBBY,
   ALL_TOPIC_IDS,
   MAX_TARGET_SCORE,
   MIN_TARGET_SCORE,
   ROUND_DURATION_MS,
+  ROUND_MAX_POINTS,
+  ROUND_MIN_POINTS,
   type Ack,
   type CreateLobbyPayload,
   type ErrorCode,
@@ -476,6 +479,223 @@ describe("rounds", () => {
   });
 });
 
+
+/** A two-player lobby with round one live and guessing open. */
+function playing() {
+  const harness = counting(COUNTDOWN_DURATION_MS);
+  harness.store.deliverRound(harness.code, harness.request.number, A_PICTURE, "Bhutan", [
+    "Kingdom of Bhutan",
+  ]);
+  return harness;
+}
+
+describe("guessing", () => {
+  it("scores a correct answer by how fast it arrived, and says so to the guesser", () => {
+    const { store, code, host, advance } = playing();
+    advance(5_000);
+
+    const outcome = store.guess(code, host.playerId, 1, "Bhutan");
+    expect(outcome.ack).toMatchObject({ ok: true, data: { correct: true, elapsedMs: 5_000 } });
+    expect(unwrap(outcome.ack)).toMatchObject({ points: 16 });
+  });
+
+  it("pays the maximum on the instant and the minimum on the buzzer", () => {
+    const instant = playing();
+    expect(unwrap(instant.store.guess(instant.code, instant.host.playerId, 1, "Bhutan").ack))
+      .toMatchObject({ points: ROUND_MAX_POINTS });
+
+    const late = playing();
+    late.advance(ROUND_DURATION_MS - 1);
+    expect(unwrap(late.store.guess(late.code, late.host.playerId, 1, "Bhutan").ack))
+      .toMatchObject({ points: ROUND_MIN_POINTS });
+  });
+
+  it("adds the points to the score and puts the result in the snapshot", () => {
+    const { store, code, host, advance } = playing();
+    advance(5_000);
+    const outcome = store.guess(code, host.playerId, 1, "bhutan!");
+
+    expect(outcome.state?.players[0]).toMatchObject({ score: 16 });
+    expect(outcome.state?.round?.results).toEqual([
+      { playerId: host.playerId, elapsedMs: 5_000, points: 16 },
+    ]);
+    // Still not the answer: the round is open and this snapshot goes to everybody.
+    expect(outcome.state?.round?.answer).toBeNull();
+  });
+
+  it("accepts an alias", () => {
+    const { store, code, host } = playing();
+    expect(unwrap(store.guess(code, host.playerId, 1, "Kingdom of Bhutan").ack)).toMatchObject({
+      correct: true,
+    });
+  });
+
+  it("tells a wrong guess apart, scores nothing, and tells nobody else", () => {
+    const { store, code, host } = playing();
+    const outcome = store.guess(code, host.playerId, 1, "Nepal");
+
+    expect(unwrap(outcome.ack)).toEqual({ correct: false });
+    // Nothing the room can see changed, so there is nothing to broadcast.
+    expect(outcome.state).toBeNull();
+    expect(store.snapshot(code)?.players[0]?.score).toBe(0);
+  });
+
+  it("lets a player keep guessing until they get it", () => {
+    const { store, code, host } = playing();
+    store.guess(code, host.playerId, 1, "Nepal");
+    store.guess(code, host.playerId, 1, "Tibet");
+    expect(unwrap(store.guess(code, host.playerId, 1, "Bhutan").ack)).toMatchObject({
+      correct: true,
+    });
+  });
+
+  it("refuses a second correct answer from the same seat", () => {
+    const { store, code, host } = playing();
+    store.guess(code, host.playerId, 1, "Bhutan");
+    expect(failure(store.guess(code, host.playerId, 1, "Bhutan").ack)).toBe("ALREADY_ANSWERED");
+    expect(store.snapshot(code)?.players[0]?.score).toBe(ROUND_MAX_POINTS);
+  });
+
+  it.each([
+    ["empty", "   "],
+    ["longer than a guess", "x".repeat(200)],
+  ])("refuses a guess that is %s", (_label, guess) => {
+    const { store, code, host } = playing();
+    expect(failure(store.guess(code, host.playerId, 1, guess).ack)).toBe("INVALID_GUESS");
+  });
+
+  it("refuses a guess quoting a round that is not the one being played", () => {
+    const { store, code, host } = playing();
+    expect(failure(store.guess(code, host.playerId, 2, "Bhutan").ack)).toBe("ROUND_NOT_OPEN");
+  });
+
+  it("refuses a guess during the countdown, before there is anything to look at", () => {
+    const { store, code, host } = counting();
+    expect(failure(store.guess(code, host.playerId, 1, "Bhutan").ack)).toBe("ROUND_NOT_OPEN");
+  });
+
+  it("refuses a guess that arrives on or after the deadline", () => {
+    const { store, code, host, advance } = playing();
+    advance(ROUND_DURATION_MS);
+    expect(failure(store.guess(code, host.playerId, 1, "Bhutan").ack)).toBe("ROUND_NOT_OPEN");
+  });
+
+  it("refuses somebody who is not in the lobby", () => {
+    const { store, code } = playing();
+    expect(failure(store.guess(code, "player-nobody", 1, "Bhutan").ack)).toBe("LOBBY_NOT_FOUND");
+  });
+
+  it("says the round is complete only once everybody present has it", () => {
+    const { store, code, host, joiners } = playing();
+    expect(store.guess(code, host.playerId, 1, "Bhutan").complete).toBe(false);
+    expect(store.guess(code, joiners[0]!.playerId, 1, "Bhutan").complete).toBe(true);
+  });
+
+  it("does not wait on a player who has dropped", () => {
+    const { store, code, host, joiners } = playing();
+    store.disconnect(code, joiners[0]!.playerId);
+    expect(store.guess(code, host.playerId, 1, "Bhutan").complete).toBe(true);
+  });
+});
+
+describe("the round loop", () => {
+  /** A lobby whose round one has been played, revealed, and is now in its gap. */
+  function inIntermission(score: number) {
+    const harness = playing();
+    if (score > 0) {
+      // Answering on the instant is worth the maximum, so this is the shortest
+      // way to put a chosen number of points on the host's row.
+      harness.store.guess(harness.code, harness.host.playerId, 1, "Bhutan");
+    }
+    harness.advance(ROUND_DURATION_MS);
+    harness.store.revealRound(harness.code, 1);
+    return harness;
+  }
+
+  it("stamps when the next countdown opens", () => {
+    const { store, code } = inIntermission(0);
+    const state = store.snapshot(code);
+    expect(state?.status).toBe("intermission");
+    expect(state?.round?.intermissionEndsAt).toBe(
+      NOON + COUNTDOWN_DURATION_MS + ROUND_DURATION_MS + INTERMISSION_DURATION_MS,
+    );
+  });
+
+  it("opens the next round's countdown when nobody has won yet", () => {
+    const { store, code, advance } = inIntermission(ROUND_MAX_POINTS);
+    advance(INTERMISSION_DURATION_MS);
+
+    const advanced = store.advance(code, 1);
+    expect(advanced?.kind).toBe("next");
+    expect(advanced?.state.status).toBe("countdown");
+    expect(advanced?.state.round).toMatchObject({
+      number: 2,
+      content: null,
+      answer: null,
+      results: [],
+      endsAt: null,
+      intermissionEndsAt: null,
+    });
+    // A fresh request, for a round the source has not been asked about yet.
+    expect(advanced?.kind === "next" && advanced.request).toMatchObject({
+      code,
+      number: 2,
+      // The answer just used, so the source does not serve Bhutan twice.
+      exclude: ["Bhutan"],
+    });
+  });
+
+  it("keeps the scores across the round boundary", () => {
+    const { store, code, host, advance } = inIntermission(ROUND_MAX_POINTS);
+    advance(INTERMISSION_DURATION_MS);
+    store.advance(code, 1);
+
+    expect(store.snapshot(code)?.players[0]).toMatchObject({
+      id: host.playerId,
+      score: ROUND_MAX_POINTS,
+    });
+  });
+
+  it("stops on a winner rather than opening another round", () => {
+    const harness = lobbyOf(2);
+    const { store, code, host } = harness;
+    unwrap(store.setTarget(code, host.playerId, MIN_TARGET_SCORE));
+
+    // MIN_TARGET_SCORE at ROUND_MAX_POINTS a round, answered instantly.
+    const rounds = Math.ceil(MIN_TARGET_SCORE / ROUND_MAX_POINTS);
+    let request = unwrap(store.start(code, host.playerId));
+
+    for (let round = 1; round <= rounds; round += 1) {
+      harness.advance(COUNTDOWN_DURATION_MS);
+      store.deliverRound(code, request.number, A_PICTURE, `Answer ${round}`, []);
+      store.guess(code, host.playerId, request.number, `Answer ${round}`);
+      harness.advance(ROUND_DURATION_MS);
+      store.revealRound(code, request.number);
+      harness.advance(INTERMISSION_DURATION_MS);
+
+      const advanced = store.advance(code, request.number);
+      if (round < rounds) {
+        expect(advanced?.kind).toBe("next");
+        if (advanced?.kind !== "next") throw new Error("expected another round");
+        request = advanced.request;
+        continue;
+      }
+      expect(advanced?.kind).toBe("finished");
+    }
+
+    const state = store.snapshot(code);
+    expect(state?.status).toBe("finished");
+    expect(state?.players[0]?.score).toBeGreaterThanOrEqual(MIN_TARGET_SCORE);
+  });
+
+  it("ignores an advance quoting the wrong round, or one from the wrong phase", () => {
+    const { store, code } = inIntermission(0);
+    expect(store.advance(code, 2)).toBeNull();
+
+    const midRound = playing();
+    expect(midRound.store.advance(midRound.code, 1)).toBeNull();
+  });
+});
 
 describe("leave", () => {
   it("frees the seat immediately", () => {

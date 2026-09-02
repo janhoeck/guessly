@@ -8,6 +8,11 @@ export type ErrorCode =
   | "INVALID_TOPICS"
   | "NOT_HOST"
   | "NOT_ENOUGH_PLAYERS"
+  /** A guess arrived for a round that is not taking any: too early, or over. */
+  | "ROUND_NOT_OPEN"
+  /** One seat gets one correct answer, and this seat has already had it. */
+  | "ALREADY_ANSWERED"
+  | "INVALID_GUESS"
   | "RATE_LIMITED"
   /** Client clears sessionStorage and returns to the join screen. */
   | "RESUME_REJECTED"

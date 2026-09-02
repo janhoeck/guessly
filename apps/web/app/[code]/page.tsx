@@ -1,5 +1,5 @@
 import { notFound } from "next/navigation"
-import { ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH } from "@guessly/protocol"
+import { isRoomCode } from "@guessly/protocol"
 
 import { GameRoom } from "@/components/game/game-room"
 
@@ -15,14 +15,12 @@ import { GameRoom } from "@/components/game/game-room"
  * A composition and nothing else: the page holds no state and never becomes a
  * client component. GameRoom is the island.
  */
-const CODE_PATTERN = new RegExp(`^[${ROOM_CODE_ALPHABET}]{${ROOM_CODE_LENGTH}}$`)
-
 export default async function GamePage({ params }: PageProps<"/[code]">) {
   const { code } = await params
   // Uppercased here as well as on the server, so a link typed in lower case
   // opens the room instead of missing it.
   const roomCode = decodeURIComponent(code).toUpperCase()
-  if (!CODE_PATTERN.test(roomCode)) notFound()
+  if (!isRoomCode(roomCode)) notFound()
 
   return <GameRoom code={roomCode} />
 }

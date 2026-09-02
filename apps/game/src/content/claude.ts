@@ -2,6 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import type { RoundKind } from "@guessly/protocol";
 import type { RoundRequest } from "../lobby/store.js";
 import { NUDGE_PROMPT, SYSTEM_PROMPT, buildUserPrompt } from "./prompt.js";
+import { describeSourceFailure } from "./failure.js";
 import { firstReachableImage } from "./reachable.js";
 import {
   SUBMIT_ROUND_INPUT_SCHEMA,
@@ -141,7 +142,7 @@ export function createClaudeRoundSource(
       if (response.stop_reason === "refusal") {
         throw new RoundSourceError(
           "The content source would not build a round for that topic.",
-          response.stop_details,
+          { cause: response.stop_details },
         );
       }
       // Nothing to echo back means nothing to continue from.
@@ -173,8 +174,11 @@ export function createClaudeRoundSource(
           if (error instanceof RoundSourceError) throw error;
           // The SDK has already retried what is worth retrying. Anything still
           // failing here is a key, a quota or an outage, and asking again just
-          // spends more of the players' patience on it.
-          throw new RoundSourceError("The content source could not be reached.", error);
+          // spends more of the players' patience on it — but *which* of those
+          // it is decides both what the lobby is told and what the log says, so
+          // it is read rather than flattened. See failure.ts.
+          const failure = describeSourceFailure(error, options.model);
+          throw new RoundSourceError(failure.message, { cause: error, detail: failure.detail });
         }
 
         const parsed = parseSubmission(input, request.kind);

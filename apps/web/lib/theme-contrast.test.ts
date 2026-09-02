@@ -88,6 +88,7 @@ const accent = toSrgb(token("accent"))
 const destructive = toSrgb(token("destructive"))
 const input = toSrgb(token("input"))
 const ring = toSrgb(token("ring"))
+const brandCyan = toSrgb(token("brand-cyan"))
 
 /** WCAG 1.4.3: normal-size text. */
 const TEXT = 4.5
@@ -117,6 +118,9 @@ describe("text on its surface (WCAG 1.4.3, 4.5:1)", () => {
     // --destructive is read here as a text colour, never as a fill.
     ["destructive label", destructive, over(destructive, 0.2, background)],
     ["destructive label, in a card", destructive, over(destructive, 0.2, card)],
+    // The scoreboard's "answered" tick: the cyan as a plate with the ground
+    // colour on top of it, which is the only way the accent may carry a glyph.
+    ["answered tick on its cyan plate", background, brandCyan],
   ]
 
   it.each(cases)("%s", (_name, fg, bg) => {

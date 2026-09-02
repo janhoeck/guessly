@@ -14,17 +14,17 @@ import { Button } from "@/components/ui/button"
  * The game screen, and the only client island on `/<CODE>`.
  *
  * It owns one decision the lobby modal never had to make: whether this tab
- * belongs on this URL at all. Four things can be true when it mounts — the seat
+ * belongs on this URL at all. Five things can be true when it mounts — the seat
  * is still being reclaimed, there is no seat, the seat is in a different lobby,
- * or the lobby has gone back to being a lobby — and only one of them is "stay
- * here". They are resolved into a single route to go to, so the redirect is one
- * value to read rather than four branches to follow.
+ * the lobby has gone back to being a lobby, or the game has been won — and only
+ * one of them is "stay here". They are resolved into a single route to go to, so
+ * the redirect is one value to read rather than five branches to follow.
  *
  * Everything below that renders from the server's snapshot and keeps nothing.
  */
 function GameRoom({ code }: { code: string }) {
   const router = useRouter()
-  const { state, playerId, settled, leave } = useLobby()
+  const { state, playerId, settled, guess, leave } = useLobby()
 
   /** Distinguishes "left on purpose" from "was never here", and is read while
    *  choosing where to go, so it is state rather than a ref. */
@@ -47,7 +47,11 @@ function GameRoom({ code }: { code: string }) {
           ? // Either the host has not started, or the round could not be built
             // and everybody has been put back. The lobby is a modal on `/`.
             "/"
-          : null
+          : state.status === "finished"
+            ? // Somebody reached the target. A result is a thing you look at
+              // rather than a state the board is left in, so it has a page.
+              `/${code}/results`
+            : null
 
   React.useEffect(() => {
     if (target) router.replace(target)
@@ -61,7 +65,7 @@ function GameRoom({ code }: { code: string }) {
 
   // The frame before a redirect lands, and the one while a reload is still
   // reclaiming its seat. Both are a moment long and neither is worth a spinner.
-  if (!state || !playerId || state.code !== code || state.status === "lobby") {
+  if (target !== null || !state || !playerId) {
     return (
       <main className="grid flex-1 place-items-center px-6 py-16">
         <p className="text-sm text-muted-foreground">Getting you back into the game…</p>
@@ -98,7 +102,13 @@ function GameRoom({ code }: { code: string }) {
           ) : state.status === "countdown" ? (
             <Countdown round={state.round} />
           ) : (
-            <RoundStage round={state.round} />
+            <RoundStage
+              round={state.round}
+              players={state.players}
+              playerId={playerId}
+              targetScore={state.targetScore}
+              onGuess={guess}
+            />
           )}
         </div>
 
@@ -107,6 +117,7 @@ function GameRoom({ code }: { code: string }) {
           hostId={state.hostId}
           playerId={playerId}
           targetScore={state.targetScore}
+          round={state.round}
         />
       </div>
     </main>

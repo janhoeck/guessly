@@ -54,6 +54,28 @@ export interface SetTopicsPayload {
   topics: TopicId[];
 }
 
+export interface GuessPayload {
+  /**
+   * Which round this is an answer to, quoted back from the snapshot. A guess
+   * typed as the clock ran out arrives after the round it was meant for has
+   * gone, and this is what stops it being scored against the next one.
+   */
+  roundNumber: number;
+  guess: string;
+}
+
+/**
+ * What the guesser alone is told.
+ *
+ * A correct answer reaches the room through the snapshot, as a `RoundResult`
+ * everybody can see. A wrong one goes nowhere else at all: this ack is the only
+ * report of a miss that exists, which is why the field can shake without the
+ * rest of the room being shown who fumbled it.
+ */
+export type GuessResult =
+  | { correct: false }
+  | { correct: true; points: number; elapsedMs: number };
+
 /**
  * A lobby is never closed because the host left — the longest-present remaining
  * player is promoted instead. Both reasons here come from the reaping sweep.
@@ -75,10 +97,11 @@ export interface LobbyClosedPayload {
 }
 
 /**
- * Guessing (`round:guess`) is higher-frequency than a lobby mutation and will
- * need a narrower shape than a full snapshot; it is specified with the rest of
- * the scoring loop. Round *lifecycle* — countdown, content, reveal — is two
- * broadcasts a round, so it rides in the snapshot like everything else.
+ * `round:guess` is the one event with a payload of its own rather than a lobby
+ * mutation that ends in a snapshot, and the reason is frequency: it is several
+ * a round per player against two broadcasts a round for everything else. Round
+ * *lifecycle* — countdown, content, reveal, intermission — rides in the
+ * snapshot like the rest.
  */
 export interface ClientToServerEvents {
   "lobby:create": (
@@ -109,6 +132,15 @@ export interface ClientToServerEvents {
   ) => void;
   /** Host only. */
   "lobby:start": (ack: (result: Ack<Record<string, never>>) => void) => void;
+  /**
+   * One guess. There is no limit on how many a player may make inside the
+   * twenty seconds — the per-socket rate limit is the only ceiling — but a
+   * correct one closes the seat's account for that round.
+   */
+  "round:guess": (
+    payload: GuessPayload,
+    ack: (result: Ack<GuessResult>) => void,
+  ) => void;
   "lobby:leave": (ack: (result: Ack<Record<string, never>>) => void) => void;
 }
 

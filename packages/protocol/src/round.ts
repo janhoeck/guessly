@@ -26,6 +26,24 @@ export type RoundContent =
   | (RoundContentBase & { kind: "lyrics"; snippet: string });
 
 /**
+ * One player's round, once they have got it right.
+ *
+ * This is public the moment it exists rather than held back to the reveal, and
+ * that is the point: watching somebody else's row settle at 1.4 seconds is the
+ * pressure the round is made of. It gives nothing away either — knowing that
+ * Kim knows the answer is not knowing the answer.
+ *
+ * There is no entry for a wrong guess. A miss is told to the player who made it
+ * and to nobody else, so the room only ever learns who got it.
+ */
+export interface RoundResult {
+  playerId: string;
+  /** From `startsAt` to the moment the guess reached the server. */
+  elapsedMs: number;
+  points: number;
+}
+
+/**
  * A round as every player sees it.
  *
  * Two fields are null on purpose rather than absent, and both of them are the
@@ -55,4 +73,17 @@ export interface RoundState {
   content: RoundContent | null;
   /** Null until the reveal. See the note above. */
   answer: string | null;
+  /**
+   * Everybody who has answered correctly, in the order they did it — so the
+   * first entry is the player who got there first. Empty until somebody does,
+   * and never holding a player twice: one seat gets one correct answer.
+   */
+  results: RoundResult[];
+  /**
+   * When the intermission after this round ends and the next countdown opens.
+   * Null until the reveal, and stamped by the server for the same reason as the
+   * two deadlines above it: a gap between rounds that each browser timed for
+   * itself would drift a little further apart every round.
+   */
+  intermissionEndsAt: number | null;
 }

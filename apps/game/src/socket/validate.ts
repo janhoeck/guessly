@@ -4,6 +4,7 @@ import {
   ok,
   type Ack,
   type CreateLobbyPayload,
+  type GuessPayload,
   type JoinLobbyPayload,
   type ResumeLobbyPayload,
   type SetTargetPayload,
@@ -64,6 +65,21 @@ export function parseSetTarget(raw: unknown): Ack<SetTargetPayload> {
   const { targetScore } = payload;
   if (typeof targetScore !== "number") return err("INVALID_TARGET_SCORE", "A target score is required.");
   return ok({ targetScore });
+}
+
+/**
+ * The guess itself is passed through exactly as typed. Trimming it, capping it
+ * and deciding whether it is even a guess are rules, and they live in the store
+ * beside the matcher that has to agree with them.
+ */
+export function parseGuess(raw: unknown): Ack<GuessPayload> {
+  const payload = isRecord(raw) ? raw : {};
+  const { roundNumber, guess } = payload;
+  if (typeof roundNumber !== "number") {
+    return err("ROUND_NOT_OPEN", "A round number is required.");
+  }
+  if (typeof guess !== "string") return err("INVALID_GUESS", "A guess is required.");
+  return ok({ roundNumber, guess });
 }
 
 export function parseSetTopics(raw: unknown): Ack<SetTopicsPayload> {

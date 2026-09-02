@@ -1,11 +1,15 @@
 import { createServer } from "node:http";
 import { Server } from "socket.io";
 import { SWEEP_INTERVAL_MS } from "@guessly/protocol";
-import { loadConfig } from "./config.js";
+import { loadConfig, loadEnvFile } from "./config.js";
 import { createClaudeRoundSource } from "./content/claude.js";
 import { createLobbyStore } from "./lobby/store.js";
 import { registerSocketHandlers, type GameServer } from "./socket/register.js";
 
+// Before anything reads process.env. Nothing else loads the file, and turbo
+// runs tasks in strict env mode, so this is the only way a local
+// ANTHROPIC_API_KEY reaches the process.
+loadEnvFile();
 const config = loadConfig();
 
 const httpServer = createServer((req, res) => {

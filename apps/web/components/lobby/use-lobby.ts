@@ -8,6 +8,7 @@ import {
   getSnapshot,
   lobbyActions,
   subscribe,
+  type GuessOutcome,
   type LobbyPending,
 } from "@/lib/lobby-client"
 
@@ -24,7 +25,7 @@ import {
  * whole reason the protocol has no incremental events.
  */
 
-export type { LobbyPending }
+export type { GuessOutcome, LobbyPending }
 
 export interface Lobby {
   /** The server's snapshot, or null when this tab is not in a lobby. */
@@ -39,6 +40,8 @@ export interface Lobby {
   setTopics(topics: TopicId[]): void
   setTargetScore(targetScore: number): void
   start(): void
+  /** The one call here whose answer does not arrive as a snapshot. See lobby-client. */
+  guess(roundNumber: number, text: string, settle: (outcome: GuessOutcome) => void): void
   leave(): void
 }
 

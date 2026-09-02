@@ -13,17 +13,15 @@ Each round follows the same cycle:
    of song lyrics) *and the question to ask about it*.
 3. The content is shown to all players simultaneously.
 4. Players have **20 seconds** to type their guess.
-5. The correct answer is revealed and points are awarded.
-6. Repeat until a player reaches the target score.
+5. The correct answer is revealed and the standings settle.
+6. A short intermission, then the next countdown — until a player reaches the
+   target score.
 
 **Every round carries a question** — "Which country's flag is this?", "Who sings
 this?" — sourced with the content rather than derived from the topic, because
 the right question depends on the subject and not on the category it came from.
 A round about a person asks who; the same topic's next round might ask what a
 place is called.
-
-Steps 4–6 are not built yet. See Open Questions: answer matching and the scoring
-curve are still undecided, and nothing should assume an answer to either.
 
 ## Starting a Game
 
@@ -41,6 +39,13 @@ is fetched against it:
    late starts the clock from when it lands, so nobody is handed a round that is
    already half over.
 5. At `endsAt` the server reveals the answer and moves to `intermission`.
+6. `INTERMISSION_DURATION_MS` later the server either opens the next countdown
+   or, if somebody has reached the target, moves to `finished`.
+
+Rounds two onward reach step 1 through `store.advance` rather than
+`lobby:start`, and everything after that is identical — the same countdown, the
+same request to the same source, the same floor. `game/rounds.ts` owns the chain
+and stops only on a winner, an abandoned round, or a lobby that has gone.
 
 If the content cannot be built at all, the lobby goes back to `lobby`, everybody
 is returned to `/`, and `round:failed` says why. A game that quietly strands
@@ -82,18 +87,54 @@ Real lyrics are copyrighted and this game does not quote them.
 fail in front of players three clicks later, and a crash at start-up says so far
 more loudly.
 
+## Guessing
+
+A player may guess as often as they like inside the 20 seconds; a correct one
+closes their account for that round and every seat gets one. `round:guess`
+quotes the round number back, so an answer typed as the clock ran out cannot be
+scored against the next round.
+
+**A miss is told to the guesser and to nobody else.** It is the only thing in
+this game that does not ride in the snapshot, which is what lets the field clear
+and shake without the room being shown who fumbled it. A *correct* answer is
+public the instant it is scored — a `RoundResult` carrying the seat, the elapsed
+time and the points — because watching somebody else's row settle at 1.4 seconds
+while you are still typing is the pressure the round is made of, and it gives
+nothing away.
+
+**Matching is normalised, then forgiving.** `lobby/matching.ts` folds away case,
+accents, punctuation, `&`, a leading article and stray whitespace, then compares
+against the answer and every alias with a small edit budget scaled by the
+target's length: nothing under five characters, one to ten, two beyond. The
+tiers are set by where real collisions are rather than by round numbers —
+"Austria"/"Australia" and "Slovakia"/"Slovenia" are two edits apart, so the
+second edit is held back until eleven characters.
+
 ## Scoring
 
 - Every player who answers correctly within the 20 seconds scores points.
-- Points scale with **speed** — the faster the correct answer, the more points.
+- Points fall **linearly with time**, from `ROUND_MAX_POINTS` (20) on the
+  instant to `ROUND_MIN_POINTS` (5) on the buzzer. A perfect game reaches the
+  default target in five rounds and a slow one in twenty.
 - A wrong answer, or no answer at all, is worth **0 points**.
-- The round always runs its full 20 seconds. It does *not* end when the first
-  player answers correctly, so slower players still have a chance to score.
+- The server stamps when each guess *arrives* and clamps the elapsed time to the
+  round, so a guess that beats the reveal timer by a millisecond is worth the
+  minimum rather than a negative number.
+- The round runs its full 20 seconds so that slower players still have a chance
+  to score. It does *not* end when the *first* player answers — but it does end
+  when the *last* one does: once every connected player has it, the rest of the
+  clock is a locked field and a bar emptying in front of people who are done.
 
 ## Winning
 
 The first player to reach the target score wins the game. The host chooses the
 target when creating the lobby; the default is **100 points**.
+
+The check happens when the *intermission* ends, not at the reveal, so the round
+somebody won on still gets its beat: the answer goes up, the scores settle, and
+only then is the game over. The lobby moves to `finished` and every client
+navigates to `/<CODE>/results` — **which is deliberately a blank page for now.**
+The winner screen and a rematch on the same lobby are the next piece of work.
 
 ## Round Types
 
@@ -155,6 +196,20 @@ Vercel serverless, which cannot hold sockets or in-memory state.
 The client connects via `NEXT_PUBLIC_SOCKET_URL`. Socket.IO gets an explicit
 origin allowlist, never `*`.
 
+**Configuration** is read once at boot by `apps/game/src/config.ts`. Copy
+`apps/game/.env.example` to `apps/game/.env` and put your key in it; the server
+loads that file itself, through Node's own `process.loadEnvFile`, resolved
+against the module so the working directory does not matter. A real environment
+variable beats the file, so a deploy sets its variables properly and ships no
+`.env` at all.
+
+Turbo runs tasks in **strict env mode**, which means a variable the shell
+exports does not reach a task unless `turbo.json` names it. `PORT`,
+`CORS_ORIGINS`, `ANTHROPIC_API_KEY` and `ANTHROPIC_MODEL` are listed under
+`passThroughEnv` on `dev` and `start` — passed through rather than hashed,
+because they are runtime configuration and one of them is a secret. A new
+runtime variable has to be added there or it will silently go missing.
+
 No database. Nothing persists between sessions.
 
 ## Web UI
@@ -185,6 +240,9 @@ reader.
 `ROUND_DURATION_MS`, `NICKNAME_MAX_LENGTH`, `MAX_PLAYERS_PER_LOBBY` and
 `DEFAULT_TARGET_SCORE` are all rendered rather than typed, so the pitch cannot
 drift away from what the server does.
+
+**A finished game is its own route.** `/<CODE>` resolves five possibilities now,
+not four, and `finished` sends everybody to `/<CODE>/results`.
 
 **The lobby is a modal; the game is a route.** A lobby is a room you are *in*,
 so it opens over the landing page from `components/landing/entry-form.tsx` —
@@ -267,7 +325,10 @@ interface Round {
   content: RoundContent | null   // { question, imageUrl } or { question, snippet }
   answer: string | null
   aliases: string[]
+  // Who got it, and when. Public from the moment it exists — see Guessing.
+  results: { playerId: string; elapsedMs: number; points: number }[]
   revealed: boolean
+  intermissionEndsAt: number | null  // stamped at the reveal
 }
 ```
 
@@ -327,6 +388,7 @@ type Ack<T> =
 | `lobby:setTarget` | `{ targetScore }` — host only | `{}` |
 | `lobby:setTopics` | `{ topics }` — host only, while `lobby` or `finished` | `{}` |
 | `lobby:start` | — host only | `{}` |
+| `round:guess` | `{ roundNumber, guess }` | `{ correct: false }` or `{ correct: true, points, elapsedMs }` |
 | `lobby:leave` | — | `{}` |
 
 **Server → client**
@@ -343,10 +405,10 @@ so deltas would save nothing measurable while introducing the class of bugs wher
 client silently drifts out of sync. The client renders from one object it always
 trusts.
 
-Round *lifecycle* — countdown, content, reveal — is two broadcasts a round, so it
-rides in the snapshot like everything else. Guessing (`round:guess`) is the
-higher-frequency one and will need a narrower shape; it is specified with the
-scoring loop.
+Round *lifecycle* — countdown, content, reveal, intermission — is a handful of
+broadcasts a round, so it rides in the snapshot like everything else.
+`round:guess` is the one exception: it is several a round per player, and its
+ack is the only place a *wrong* guess is ever reported.
 
 **The server owns the clock.** It stamps when each guess *arrives*, and clients
 render their countdown from a server-sent deadline. Client timestamps are never
@@ -354,9 +416,10 @@ trusted — speed is the score here.
 
 **Errors:** `LOBBY_NOT_FOUND`, `LOBBY_FULL`, `GAME_IN_PROGRESS`, `NICKNAME_TAKEN`,
 `INVALID_NICKNAME`, `INVALID_TARGET_SCORE`, `INVALID_TOPICS`, `NOT_HOST`,
-`NOT_ENOUGH_PLAYERS`, `RATE_LIMITED`, `SERVER_ERROR`, and `RESUME_REJECTED` — on
-which the client clears `sessionStorage` and returns to the join screen rather
-than retrying forever.
+`NOT_ENOUGH_PLAYERS`, `ROUND_NOT_OPEN`, `ALREADY_ANSWERED`, `INVALID_GUESS`,
+`RATE_LIMITED`, `SERVER_ERROR`, and `RESUME_REJECTED` — on which the client
+clears `sessionStorage` and returns to the join screen rather than retrying
+forever.
 
 Every payload is validated at the socket boundary; it is all untrusted input. A
 per-socket cap of ~20 events/sec stops one spammer from wedging the event loop.
@@ -368,8 +431,11 @@ and `create` / `join` / `resume` / `leave` / `start` / `disconnect` / `sweep` ta
 and return plain data.
 
 That puts every rule above — host promotion, nickname collisions, both grace
-periods, the reaping sweep, and the round's own state machine — under fast
-deterministic unit tests with a fake clock. A thin adapter maps socket events to
+periods, the reaping sweep, the round's own state machine, and the scoring of a
+guess — under fast deterministic unit tests with a fake clock. `matching.ts` and
+`scoring.ts` are pure functions of their arguments and are tested on their own,
+which is where "would a player call this right?" is argued rather than in the
+store. A thin adapter maps socket events to
 store calls; integration tests with a real Socket.IO client cover join → drop →
 resume and the error acks.
 
@@ -390,13 +456,16 @@ strange" has to come back as a rejection rather than a throw.
 
 These are deliberately not decided yet. Ask before assuming an answer:
 
-- **Answer matching** — are free-text guesses fuzzy-matched? How tolerant is it of
-  typos, alternative spellings and aliases (e.g. "USA" vs "United States")? The
-  source already returns an `aliases` list per round; nothing consumes it yet.
-- **Scoring curve** — the exact formula mapping answer time to points.
 - **Content repetition across games** — within a game, `usedAnswers` is handed to
   the source as an exclusion list. Across games there is nothing, because there
   is no database and nothing persists between sessions.
 - **Prefetching** — content is fetched when the round opens, so the players pay
-  the latency once per round behind the countdown. Sourcing round *n+1* during
-  round *n* would hide it entirely, and is worth doing once the loop exists.
+  the latency once per round behind the countdown. The loop now exists, and the
+  intermission is five seconds of a server doing nothing: sourcing round *n+1*
+  there would hide the wait entirely.
+- **The results screen** — `/<CODE>/results` is a blank page. Final standings and
+  a rematch on the same lobby (which needs scores reset and `start` opened up
+  from `finished`) are unbuilt.
+- **An empty room keeps playing** — if every player drops mid-game the chain
+  goes on sourcing rounds until the empty-lobby sweep reaps the lobby five
+  minutes later. Bounded and cheap, but it is a dozen wasted model calls.

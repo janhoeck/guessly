@@ -2,7 +2,9 @@ import {
   ALL_TOPIC_IDS,
   COUNTDOWN_DURATION_MS,
   EMPTY_LOBBY_TTL_MS,
+  GUESS_MAX_LENGTH,
   IDLE_LOBBY_TTL_MS,
+  INTERMISSION_DURATION_MS,
   LOBBY_DISCONNECT_GRACE_MS,
   MAX_PLAYERS_PER_LOBBY,
   MAX_TARGET_SCORE,
@@ -20,6 +22,8 @@ import {
   type AckFailure,
   type CreateLobbyPayload,
   type CreateLobbyResult,
+  type ErrorCode,
+  type GuessResult,
   type JoinLobbyPayload,
   type JoinLobbyResult,
   type LobbyClosedReason,
@@ -32,6 +36,8 @@ import {
   type TopicId,
 } from "@guessly/protocol";
 import { generateCode, generatePlayerId, generateToken, tokensMatch } from "./codes.js";
+import { matchesAnswer } from "./matching.js";
+import { pointsFor } from "./scoring.js";
 import {
   toLobbyState,
   type LobbyRecord,
@@ -75,6 +81,39 @@ export interface RoundRequest {
   startsAt: number;
 }
 
+/**
+ * Everything a guess decides, in one return.
+ *
+ * Three separate things come out of one call because they go to three different
+ * places, and splitting them into three calls would mean three chances for the
+ * adapter to make a decision of its own. The store decides; the caller posts.
+ */
+export interface GuessOutcome {
+  /** What goes back to the guesser, and to nobody else. */
+  ack: Ack<GuessResult>;
+  /**
+   * The snapshot to broadcast, or null when nothing the room can see changed —
+   * which is every wrong guess, because a miss is the guesser's business.
+   */
+  state: LobbyState | null;
+  /**
+   * Every connected player has now answered correctly. The twenty seconds exist
+   * so that slower players still get a chance to score; when there are none
+   * left, what is left of the clock is a locked field and a bar emptying in
+   * front of people who are done.
+   */
+  complete: boolean;
+}
+
+/**
+ * What happens when the intermission runs out: either somebody reached the
+ * target and the game is over, or the next countdown opens and the content
+ * source is asked for another round.
+ */
+export type AdvanceResult =
+  | { kind: "finished"; state: LobbyState }
+  | { kind: "next"; state: LobbyState; request: RoundRequest };
+
 /** What one sweep tick changed. The caller turns this into socket traffic. */
 export interface SweepResult {
   /** Lobbies that survived but look different now. */
@@ -108,8 +147,19 @@ export interface LobbyStore {
     answer: string,
     aliases: string[],
   ): LobbyState | null;
+  /**
+   * One guess, stamped when it arrived. Client timestamps are never consulted —
+   * speed is the score here, so the only clock that counts is this one.
+   */
+  guess(code: string, playerId: string, roundNumber: number, guess: string): GuessOutcome;
   /** The 20 seconds are up: the answer goes on the wire and guessing closes. */
   revealRound(code: string, number: number): LobbyState | null;
+  /**
+   * The intermission is over. Either somebody has reached the target and the
+   * lobby is finished, or the next round's countdown opens and a fresh request
+   * goes out. Null if the lobby has moved on from the round quoted.
+   */
+  advance(code: string, number: number): AdvanceResult | null;
   /** The content could not be built. The lobby goes back to being a lobby. */
   abandonRound(code: string, number: number): LobbyState | null;
   /** Intentional exit. Returns the snapshot to broadcast, or null if there is nobody left to tell. */
@@ -230,6 +280,65 @@ export function createLobbyStore(overrides: Partial<LobbyStoreDeps> = {}): Lobby
     const raw = deps.pickIndex(topics.length);
     const index = Number.isInteger(raw) ? Math.min(Math.max(raw, 0), topics.length - 1) : 0;
     return topics[index] ?? null;
+  };
+
+  /**
+   * Opens a countdown for a round that does not exist yet, and describes it to
+   * whoever has to go and find the content.
+   *
+   * Round one and round nine both come through here, which is the point: "what
+   * a fresh round looks like" is one piece of code rather than two that drift
+   * apart the first time a field is added.
+   */
+  const openRound = (lobby: LobbyRecord, number: number, topic: TopicId, now: number): RoundRequest => {
+    const round: RoundRecord = {
+      number,
+      topic,
+      kind: topicById(topic).kind,
+      // The countdown starts now and the content is fetched against it, so the
+      // wait for the AI is spent watching a number fall rather than a spinner
+      // turn. `in_round` is not reached until there is something to look at —
+      // see deliverRound.
+      startsAt: now + COUNTDOWN_DURATION_MS,
+      endsAt: null,
+      content: null,
+      answer: null,
+      aliases: [],
+      results: [],
+      revealed: false,
+      intermissionEndsAt: null,
+    };
+
+    lobby.status = "countdown";
+    lobby.round = round;
+    lobby.lastActivityAt = now;
+
+    return {
+      code: lobby.code,
+      number: round.number,
+      topic: round.topic,
+      kind: round.kind,
+      exclude: [...lobby.usedAnswers],
+      startsAt: round.startsAt,
+    };
+  };
+
+  /**
+   * Is there anybody left who could still answer this round?
+   *
+   * Only connected players count. A seat whose phone went to sleep is held to
+   * the end of the game, but holding the round open for it as well would mean
+   * every dropped player costs the room the rest of the clock.
+   */
+  const everybodyAnswered = (lobby: LobbyRecord, round: RoundRecord): boolean => {
+    const answered = new Set(round.results.map((result) => result.playerId));
+    let present = 0;
+    for (const player of lobby.players.values()) {
+      if (!player.connected) continue;
+      present += 1;
+      if (!answered.has(player.id)) return false;
+    }
+    return present > 0;
   };
 
   /**
@@ -427,35 +536,7 @@ export function createLobbyStore(overrides: Partial<LobbyStoreDeps> = {}): Lobby
         return err("INVALID_TOPICS", "This lobby has no topics to play.");
       }
 
-      const now = deps.now();
-      // The countdown starts now and the content is fetched against it, so the
-      // wait for the round is spent watching a number fall rather than a
-      // spinner turn. `in_round` is not reached until there is something to
-      // look at — see deliverRound.
-      const round: RoundRecord = {
-        number: 1,
-        topic,
-        kind: topicById(topic).kind,
-        startsAt: now + COUNTDOWN_DURATION_MS,
-        endsAt: null,
-        content: null,
-        answer: null,
-        aliases: [],
-        revealed: false,
-      };
-
-      host.lobby.status = "countdown";
-      host.lobby.round = round;
-      host.lobby.lastActivityAt = now;
-
-      return ok({
-        code: host.lobby.code,
-        number: round.number,
-        topic: round.topic,
-        kind: round.kind,
-        exclude: [...host.lobby.usedAnswers],
-        startsAt: round.startsAt,
-      });
+      return ok(openRound(host.lobby, 1, topic, deps.now()));
     },
 
     deliverRound(code, number, content, answer, aliases) {
@@ -480,6 +561,59 @@ export function createLobbyStore(overrides: Partial<LobbyStoreDeps> = {}): Lobby
       return toLobbyState(lobby, now);
     },
 
+    guess(code, playerId, roundNumber, guess) {
+      const refuse = (error: ErrorCode, message: string): GuessOutcome => ({
+        ack: err(error, message),
+        state: null,
+        complete: false,
+      });
+
+      const lobby = lobbies.get(normalizeCode(code));
+      if (!lobby) return refuse("LOBBY_NOT_FOUND", "That lobby no longer exists.");
+      const player = lobby.players.get(playerId);
+      if (!player) return refuse("LOBBY_NOT_FOUND", "You are not in that lobby.");
+
+      const round = lobby.round;
+      if (lobby.status !== "in_round" || !round || round.number !== roundNumber) {
+        return refuse("ROUND_NOT_OPEN", "That round is not taking guesses.");
+      }
+
+      const attempt = guess.trim();
+      if (!attempt || attempt.length > GUESS_MAX_LENGTH) {
+        return refuse("INVALID_GUESS", `A guess is 1–${GUESS_MAX_LENGTH} characters.`);
+      }
+      if (round.results.some((result) => result.playerId === playerId)) {
+        return refuse("ALREADY_ANSWERED", "You have already got this one.");
+      }
+
+      const now = deps.now();
+      // The deadline is the deadline. The reveal runs off a timer and a timer
+      // can be a few milliseconds late; without this, whether a guess on the
+      // buzzer counted would depend on how busy the event loop was.
+      if (round.endsAt !== null && now >= round.endsAt) {
+        return refuse("ROUND_NOT_OPEN", "That round is over.");
+      }
+
+      // Somebody is playing, whether or not they got it right.
+      lobby.lastActivityAt = now;
+
+      if (round.answer === null || !matchesAnswer(attempt, round.answer, round.aliases)) {
+        // Nothing the room can see has changed, so there is nothing to send it.
+        return { ack: ok({ correct: false }), state: null, complete: false };
+      }
+
+      const elapsedMs = Math.max(0, now - round.startsAt);
+      const points = pointsFor(elapsedMs);
+      player.score += points;
+      round.results.push({ playerId, elapsedMs, points });
+
+      return {
+        ack: ok({ correct: true, points, elapsedMs }),
+        state: toLobbyState(lobby, now),
+        complete: everybodyAnswered(lobby, round),
+      };
+    },
+
     revealRound(code, number) {
       const found = roundInPhase(code, number, "in_round");
       if (!found) return null;
@@ -487,11 +621,42 @@ export function createLobbyStore(overrides: Partial<LobbyStoreDeps> = {}): Lobby
 
       const now = deps.now();
       round.revealed = true;
+      round.intermissionEndsAt = now + INTERMISSION_DURATION_MS;
       lobby.status = "intermission";
       lobby.lastActivityAt = now;
       // Remembered so the next round does not serve the same thing again.
       if (round.answer !== null) lobby.usedAnswers.push(round.answer);
       return toLobbyState(lobby, now);
+    },
+
+    advance(code, number) {
+      const found = roundInPhase(code, number, "intermission");
+      if (!found) return null;
+      const { lobby } = found;
+
+      const now = deps.now();
+      lobby.lastActivityAt = now;
+
+      // Checked here rather than at the reveal so that the round somebody won
+      // on still gets its intermission: the answer goes up, the scores settle,
+      // and only then is the game over.
+      const won = [...lobby.players.values()].some(
+        (player) => player.score >= lobby.targetScore,
+      );
+      const topic = won ? null : pickTopic(lobby);
+
+      if (topic === null) {
+        // `pickTopic` returning null is unreachable — a lobby is validated to
+        // have at least one topic and cannot be re-picked mid-game — but a
+        // lobby that could not build another round has nothing left to play,
+        // and finishing says so rather than hanging on an intermission that
+        // never ends.
+        lobby.status = "finished";
+        return { kind: "finished", state: toLobbyState(lobby, now) };
+      }
+
+      const request = openRound(lobby, number + 1, topic, now);
+      return { kind: "next", state: toLobbyState(lobby, now), request };
     },
 
     abandonRound(code, number) {

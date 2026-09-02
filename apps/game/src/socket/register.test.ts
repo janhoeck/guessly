@@ -6,9 +6,12 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   ALL_TOPIC_IDS,
   IDLE_LOBBY_TTL_MS,
+  INTERMISSION_DURATION_MS,
   RATE_LIMIT_EVENTS_PER_SEC,
+  ROUND_MAX_POINTS,
   type Ack,
   type CreateLobbyResult,
+  type GuessResult,
   type JoinLobbyResult,
   type LobbyClosedPayload,
   type LobbyState,
@@ -65,6 +68,25 @@ function emit<T>(client: ClientSocket, event: string, payload?: unknown): Promis
 
 function nextEvent<T>(client: ClientSocket, event: string): Promise<T> {
   return new Promise((resolve) => client.once(event, resolve as (value: unknown) => void));
+}
+
+/**
+ * The next snapshot that looks like the one being waited for. A round can
+ * produce several in a row — a guess lands, then the reveal it completed — and
+ * `nextEvent` would catch whichever came first.
+ */
+function stateWhere(
+  client: ClientSocket,
+  matches: (state: LobbyState) => boolean,
+): Promise<LobbyState> {
+  return new Promise((resolve) => {
+    const listen = (state: LobbyState): void => {
+      if (!matches(state)) return;
+      client.off("lobby:state", listen);
+      resolve(state);
+    };
+    client.on("lobby:state", listen);
+  });
 }
 
 const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 30));
@@ -285,6 +307,158 @@ describe("starting a round", () => {
     expect((await explained).message).toBe("None of the pictures the AI picked would load.");
     expect((await state).status).toBe("lobby");
     expect((await state).round).toBeNull();
+  });
+});
+
+describe("guessing", () => {
+  /**
+   * Host and guest both in, with round one live and genuinely open.
+   *
+   * The clock moves forward here, and that is the point of this helper. Up to
+   * the delivery the store's pinned instant is well in the past, so the
+   * countdown's deadline is already behind the runner's real clock and fires on
+   * the next tick — the same trick the rest of this file relies on. A round
+   * that has to be guessed at cannot be stamped that way: its deadline has to
+   * be somewhere ahead, or the reveal races the first guess.
+   */
+  async function playing() {
+    const table = await readyToStart();
+    await emit(table.host, "lobby:start");
+    await settle();
+
+    // Awaited on both sockets, not just the host's: the delivery snapshot goes
+    // to the whole room, and a test that only waits for one copy of it goes on
+    // to mistake the other for whatever it does next.
+    const live = [
+      nextEvent<LobbyState>(table.host, "lobby:state"),
+      nextEvent<LobbyState>(table.guest, "lobby:state"),
+    ];
+    clock = Date.now();
+    content.deliver({
+      content: A_PICTURE,
+      answer: "Bhutan",
+      aliases: ["Kingdom of Bhutan"],
+      subject: "Flag of Bhutan",
+    });
+    await Promise.all(live);
+    return table;
+  }
+
+  it("tells the guesser they were wrong and tells nobody else anything", async () => {
+    const { host, guest } = await playing();
+
+    let overheard = false;
+    guest.on("lobby:state", () => {
+      overheard = true;
+    });
+
+    const result = await emit<GuessResult>(host, "round:guess", {
+      roundNumber: 1,
+      guess: "Nepal",
+    });
+
+    expect(unwrap(result)).toEqual({ correct: false });
+    await settle();
+    expect(overheard).toBe(false);
+  });
+
+  it("puts a correct answer on everybody's scoreboard", async () => {
+    const { host, guest, created } = await playing();
+
+    const broadcast = nextEvent<LobbyState>(guest, "lobby:state");
+    const result = unwrap(
+      await emit<GuessResult>(host, "round:guess", { roundNumber: 1, guess: "bhutan" }),
+    );
+    expect(result).toMatchObject({ correct: true, points: ROUND_MAX_POINTS });
+
+    const state = await broadcast;
+    expect(state.round?.results).toEqual([
+      {
+        playerId: created.playerId,
+        elapsedMs: expect.any(Number),
+        points: ROUND_MAX_POINTS,
+      },
+    ]);
+    expect(state.players[0]?.score).toBe(ROUND_MAX_POINTS);
+    // The round is still open, so still nobody has been told the answer.
+    expect(state.round?.answer).toBeNull();
+  });
+
+  it("accepts an alias", async () => {
+    const { host } = await playing();
+    expect(
+      unwrap(
+        await emit<GuessResult>(host, "round:guess", {
+          roundNumber: 1,
+          guess: "Kingdom of Bhutan",
+        }),
+      ),
+    ).toMatchObject({ correct: true });
+  });
+
+  it("refuses a second answer from a seat that already has one", async () => {
+    const { host } = await playing();
+    await emit(host, "round:guess", { roundNumber: 1, guess: "Bhutan" });
+
+    expect(await emit(host, "round:guess", { roundNumber: 1, guess: "Bhutan" })).toMatchObject({
+      ok: false,
+      error: "ALREADY_ANSWERED",
+    });
+  });
+
+  it("survives a payload that is not even the right shape", async () => {
+    const { host } = await playing();
+
+    expect(await emit(host, "round:guess", "Bhutan")).toMatchObject({
+      ok: false,
+      error: "ROUND_NOT_OPEN",
+    });
+    expect(await emit(host, "round:guess", { roundNumber: 1, guess: 12 })).toMatchObject({
+      ok: false,
+      error: "INVALID_GUESS",
+    });
+  });
+
+  it("refuses a stranger who is not in a lobby at all", async () => {
+    await playing();
+    const stranger = await connect();
+    expect(await emit(stranger, "round:guess", { roundNumber: 1, guess: "Bhutan" })).toMatchObject({
+      ok: false,
+      error: "LOBBY_NOT_FOUND",
+    });
+  });
+
+  it("reveals early once everybody present has answered", async () => {
+    const { host, guest } = await playing();
+    await emit(host, "round:guess", { roundNumber: 1, guess: "Bhutan" });
+
+    // Nineteen seconds still on the clock, and nobody left to spend them on.
+    const revealed = stateWhere(guest, (state) => state.status === "intermission");
+    await emit(guest, "round:guess", { roundNumber: 1, guess: "Bhutan" });
+
+    const state = await revealed;
+    expect(state.round?.answer).toBe("Bhutan");
+    expect(state.round?.results).toHaveLength(2);
+  });
+
+  it("opens the next round's countdown when the intermission is up", async () => {
+    const { host, guest } = await playing();
+    await emit(host, "round:guess", { roundNumber: 1, guess: "Bhutan" });
+
+    // Wound back, so the intermission the reveal is about to stamp is already
+    // behind the runner's real clock and its timer fires at once. How long the
+    // gap actually is is covered deterministically in the store's own tests;
+    // what is under test here is that the chain links up at all.
+    clock = Date.now() - INTERMISSION_DURATION_MS;
+
+    const opened = stateWhere(host, (state) => state.round?.number === 2);
+    await emit(guest, "round:guess", { roundNumber: 1, guess: "Bhutan" });
+
+    const state = await opened;
+    expect(state.status).toBe("countdown");
+    expect(state.round).toMatchObject({ number: 2, content: null, results: [] });
+    // And the scores from round one came with them.
+    expect(state.players[0]?.score).toBe(ROUND_MAX_POINTS);
   });
 });
 

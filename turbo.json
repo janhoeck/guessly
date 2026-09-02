@@ -2,6 +2,11 @@
   "$schema": "https://turbo.build/schema.json",
   "ui": "tui",
   "globalDependencies": ["tsconfig.base.json"],
+  // Turbo runs tasks in strict env mode, so a variable the shell exports does
+  // not reach a task unless it is named. These are runtime configuration rather
+  // than build inputs, and one of them is a secret, so they are passed through
+  // rather than hashed into a cache key — `dev` and `start` are uncached
+  // anyway. Local development reads apps/game/.env instead; see config.ts.
   "globalEnv": ["NODE_ENV"],
   "tasks": {
     "build": {
@@ -13,12 +18,26 @@
     "dev": {
       "dependsOn": ["^build"],
       "cache": false,
-      "persistent": true
+      "persistent": true,
+      "passThroughEnv": [
+        "PORT",
+        "CORS_ORIGINS",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_MODEL",
+        "NEXT_PUBLIC_SOCKET_URL"
+      ]
     },
     "start": {
       "dependsOn": ["build"],
       "cache": false,
-      "persistent": true
+      "persistent": true,
+      "passThroughEnv": [
+        "PORT",
+        "CORS_ORIGINS",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_MODEL",
+        "NEXT_PUBLIC_SOCKET_URL"
+      ]
     },
     "lint": {
       "dependsOn": ["^build"]

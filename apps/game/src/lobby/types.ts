@@ -4,6 +4,7 @@ import type {
   Player,
   RoundContent,
   RoundKind,
+  RoundResult,
   RoundState,
   TopicId,
 } from "@guessly/protocol";
@@ -37,12 +38,20 @@ export interface RoundRecord {
   answer: string | null;
   /**
    * What else counts as the answer — "USA" for "United States", the artist for
-   * a song. Unused until guesses are scored, but it arrives with the answer and
-   * throwing it away here would mean asking for it twice.
+   * a song. It arrives with the answer, and it is the half of answer matching
+   * that knows anything about the subject.
    */
   aliases: string[];
+  /**
+   * Who has answered correctly, in the order they did. Public, unlike the two
+   * fields above it: the room is entitled to see who got there first, and
+   * seeing that tells nobody what the answer was.
+   */
+  results: RoundResult[];
   /** The reveal. Until this flips, `answer` does not go on the wire. */
   revealed: boolean;
+  /** Stamped at the reveal; when the next countdown opens. */
+  intermissionEndsAt: number | null;
 }
 
 export interface LobbyRecord {
@@ -81,6 +90,10 @@ function toRoundState(round: RoundRecord | null): RoundState | null {
     // downstream of here writes to it.
     content: round.content,
     answer: round.revealed ? round.answer : null,
+    // Copied for the same reason as `topics` below: a snapshot on the wire must
+    // not be a live handle on the round still being played.
+    results: [...round.results],
+    intermissionEndsAt: round.intermissionEndsAt,
   };
 }
 

@@ -3,11 +3,9 @@ import type { LanguageId, RoundKind, TopicId } from "@guessly/protocol";
 /**
  * The round bank's storage seam.
  *
- * Every method is async even though the SQLite implementation underneath is
- * synchronous, because the interface is written for the *next* implementation:
- * swapping SQLite for Postgres has to be one new file that implements this,
- * not a change to every caller. Nothing outside `bank/` may know which one is
- * plugged in.
+ * Every method is async, so a different store underneath is one new file that
+ * implements this rather than a change to every caller. Nothing outside
+ * `bank/` may know which one is plugged in.
  *
  * **A round is one subject and many languages.** What the round *shows* —
  * the picture, or a lyrics round's paraphrase — is the same whoever is

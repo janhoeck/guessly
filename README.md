@@ -10,11 +10,11 @@ A pnpm workspace driven by [Turborepo](https://turborepo.com):
 ```
 apps/web/           # Next.js app. Renders UI. Holds no game state.
 apps/game/          # Node + Socket.IO server. Owns all lobby state, in memory.
-                    # Reads the round bank; its data/ holds rounds.db + images/.
+                    # Reads the round bank; its data/ holds the bank's images/.
 tools/fill/         # The fill service: the only process that calls the AI.
                     # Writes the round bank the game server reads.
 packages/protocol/  # Shared TypeScript types for every socket event.
-packages/bank/      # The round bank: repository, SQLite, image store — the
+packages/bank/      # The round bank: repository, Postgres, image store — the
                     # seam apps/game and tools/fill share instead of each other.
 ```
 
@@ -67,8 +67,10 @@ with `pnpm turbo run build --filter @guessly/web`.
 
 Two long-running Node processes on a host that can hold sockets and in-memory
 state (Railway, Fly.io, Render, a VPS) — *not* Vercel serverless. Lobby state
-is memory and dies with the process; the round bank (`DATA_DIR`, default
-`apps/game/data`) must sit on a disk that survives restarts, or every deploy
-starts with an empty bank. The fill service runs wherever it can reach that
-same directory — on the host, or locally against a synced copy — and only
-while you want the bank to grow.
+is memory and dies with the process; the round bank needs a Postgres
+(`DATABASE_URL`) and, for its images, a disk that survives restarts
+(`DATA_DIR`, default `apps/game/data`) — or every deploy starts with an empty
+bank. `PUBLIC_BASE_URL` must be the origin players reach the game server on,
+because banked image URLs are built from it. The fill service runs wherever it
+can reach that same database and directory — on the host, or locally through a
+tunnel — and only while you want the bank to grow.

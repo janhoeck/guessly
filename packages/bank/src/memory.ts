@@ -4,9 +4,8 @@ import { createDrizzleRoundRepository, migrationsFolder, type BankDatabase } fro
 /**
  * The bank in memory, for tests: PGlite, which is Postgres itself compiled to
  * WASM rather than an imitation of it, running the same Drizzle queries and
- * the same migrations as the real repository. What `:memory:` was to the
- * SQLite bank, this is to the Postgres one — every suite gets a fresh, empty,
- * *actual* Postgres without a server to install or clean up.
+ * the same migrations as the real repository — so every suite gets a fresh,
+ * empty, *actual* Postgres without a server to install or clean up.
  *
  * One PGlite boots per process and every `init()` wipes it back to nothing —
  * dropping the schemas is milliseconds where booting WASM Postgres is a

@@ -124,15 +124,10 @@ The schema lives in `packages/bank/src/schema.ts` — the one file both the
 queries and `drizzle-kit generate` read, so the SQL migrations under
 `packages/bank/drizzle/` can never drift from what the queries mean. `init()`
 applies whatever is pending on every start; a schema change is an edit to
-`schema.ts`, a `pnpm db:generate` in `packages/bank`, and both committed. The
-bank lived in SQLite once, and `pnpm db:import [rounds.db]` (in
-`packages/bank`, after a build) is what moved it:
-a one-time copy into Postgres, ids and serve counts included, because the
-rotation's memory of what has been dealt is part of the bank — and a refusal
-if Postgres already holds rounds, rather than a guess at a merge. Rounds from
-before a language existed are simply rounds without that language's text —
-dealt to English lobbies and passed over for German ones, which is what an
-empty German shelf looks like until a fill run stocks it.
+`schema.ts`, a `pnpm db:generate` in `packages/bank`, and both committed.
+Rounds from before a language existed are simply rounds without that
+language's text — dealt to English lobbies and passed over for German ones,
+which is what an empty German shelf looks like until a fill run stocks it.
 
 **Images are self-hosted.** The generator downloads the picture — whole file,
 capped, format verified by magic bytes rather than by anybody's content-type
@@ -451,10 +446,9 @@ go missing.
 **Lobbies are memory; content is an asset.** Lobby state lives in the game
 server's process and dies with it — deliberately, see Lobbies. The round bank
 persists: Postgres, through Drizzle, behind the `RoundRepository` interface
-in `packages/bank` — an interface written async for exactly this
-implementation before it existed, which is why swapping SQLite out was one
-new file rather than a change to any caller. Nothing outside `packages/bank`
-knows what is plugged in. Two tables: `rounds` is what was photographed and
+in `packages/bank` — written async so what is behind it stays swappable for
+one new file rather than a change to any caller. Nothing outside
+`packages/bank` knows what is plugged in. Two tables: `rounds` is what was photographed and
 how often it has been dealt, `round_texts` is what each language asks and
 accepts about it. The server and the fill service are two processes on the
 one database, so `insert` checks and writes under a transaction-scoped

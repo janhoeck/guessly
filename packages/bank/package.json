@@ -21,8 +21,7 @@
     "typecheck": "tsc -p tsconfig.typecheck.json",
     "test": "vitest run",
     "clean": "rimraf dist .turbo",
-    "db:generate": "drizzle-kit generate",
-    "db:import": "node dist/import-sqlite.js"
+    "db:generate": "drizzle-kit generate"
   },
   "dependencies": {
     "@guessly/protocol": "workspace:*",

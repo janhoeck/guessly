@@ -9,6 +9,7 @@
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
     "fill": "turbo run fill",
+    "migrate:images": "turbo run migrate:images",
     "test": "turbo run test",
     "clean": "turbo run clean && rimraf .turbo"
   },

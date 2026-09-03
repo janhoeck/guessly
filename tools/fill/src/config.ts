@@ -1,4 +1,5 @@
 import { fileURLToPath } from "node:url";
+import { readS3Config, type S3ImageStoreConfig } from "@guessly/bank";
 import { REASONING_EFFORTS, type ReasoningEffort } from "./content/deepseek.js";
 
 /**
@@ -39,8 +40,8 @@ export interface FillConfig {
   deepseekReasoningEffort: ReasoningEffort;
   /** The Postgres the game server deals from — the bank this tool fills. */
   databaseUrl: string;
-  /** Where the bank's image files go: the directory the game server serves. */
-  dataDir: string;
+  /** The bucket the bank's pictures go in: the one the game server reads. */
+  s3: S3ImageStoreConfig;
 }
 
 /**
@@ -95,12 +96,11 @@ export function loadFillConfig(env: NodeJS.ProcessEnv = process.env): FillConfig
     );
   }
 
-  // The default must land on the directory the game server serves from —
-  // filling any other bank is pouring water beside the glass. The server's
-  // own default is apps/game/data, resolved the same way against its module.
-  const dataDir =
-    (env.DATA_DIR ?? "").trim() ||
-    fileURLToPath(new URL("../../../apps/game/data", import.meta.url));
+  // Must be the bucket the game server reads — filling any other one is
+  // pouring water beside the glass. Same four variables, same function, and
+  // apps/game/.env is on the fallback list above, so one set in one place is
+  // enough locally.
+  const s3 = readS3Config(env, "tools/fill");
 
-  return { deepseekApiKey, deepseekModel, deepseekReasoningEffort, databaseUrl, dataDir };
+  return { deepseekApiKey, deepseekModel, deepseekReasoningEffort, databaseUrl, s3 };
 }

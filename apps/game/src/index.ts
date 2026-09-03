@@ -1,9 +1,7 @@
-import { createReadStream } from "node:fs";
 import { createServer, type ServerResponse } from "node:http";
-import { join } from "node:path";
 import { Server } from "socket.io";
 import { SWEEP_INTERVAL_MS } from "@guessly/protocol";
-import { createImageStore, createPostgresRoundRepository } from "@guessly/bank";
+import { createPostgresRoundRepository, createS3ImageStore } from "@guessly/bank";
 import { createBankedRoundSource } from "./bank/source.js";
 import { loadConfig, loadEnvFile } from "./config.js";
 import { createLobbyStore } from "./lobby/store.js";
@@ -11,46 +9,62 @@ import { registerSocketHandlers, type GameServer } from "./socket/register.js";
 
 // Before anything reads process.env. Nothing else loads the file, and turbo
 // runs tasks in strict env mode, so this is the only way a local override
-// like DATA_DIR or PUBLIC_BASE_URL reaches the process.
+// like S3_ENDPOINT or PUBLIC_BASE_URL reaches the process.
 loadEnvFile();
 const config = loadConfig();
 
-// The bank: rounds in Postgres, pictures on disk under DATA_DIR — both
-// expected to outlive the process; that persistence is the whole point.
+// The bank: rounds in Postgres, pictures in an S3 bucket — both expected to
+// outlive the process; that persistence is the whole point. Nothing of either
+// is on this server's disk, so it needs no volume to survive a deploy.
 const repository = createPostgresRoundRepository(config.databaseUrl);
-const images = createImageStore(join(config.dataDir, "images"));
+const images = createS3ImageStore(config.s3);
 await repository.init();
 await images.init();
 
 /**
- * Banked images, from our own origin. The filename is content-addressed and
- * validated by the store, so an unknown or malformed name is a 404 before the
- * filesystem is consulted, and a known one can be cached forever — different
- * picture, different name.
+ * Banked images, from our own origin. The bucket is private and the players
+ * never see it: this route reads the object and streams it out, so the URL a
+ * round carries is the same one it carried when the picture was a file — and
+ * there is no third-party host, no CORS and no signed link to expire.
+ *
+ * The name is content-addressed and validated by the store, so an unknown or
+ * malformed one is a 404 before the bucket is asked, and a known one can be
+ * cached forever — different picture, different name.
  */
-const serveImage = (filename: string, res: ServerResponse): void => {
-  const found = images.resolve(filename);
+const serveImage = async (filename: string, res: ServerResponse): Promise<void> => {
+  let found;
+  try {
+    found = await images.open(filename);
+  } catch (error) {
+    // The bucket itself is unreachable. Saying "not found" here would send
+    // whoever reads the log hunting for a picture that is exactly where it
+    // should be, so this is the store's failure and it says so.
+    console.error(`[game] image store failed for ${filename}`, error);
+    res.writeHead(502, { "content-type": "text/plain" });
+    res.end("Image store unavailable");
+    return;
+  }
+
   if (found === null) {
+    // A name we never issued, or one we did and the bucket no longer holds —
+    // a wiped store next to a kept database. The browser's onError is the last
+    // mile, same as ever.
     res.writeHead(404, { "content-type": "text/plain" });
     res.end("Not found");
     return;
   }
 
-  const stream = createReadStream(found.path);
-  stream.on("error", () => {
-    // Banked but missing on disk — a wiped image directory next to a kept
-    // database. The browser's onError is the last mile, same as ever.
-    if (!res.headersSent) res.writeHead(404, { "content-type": "text/plain" });
-    res.end();
+  res.writeHead(200, {
+    "content-type": found.contentType,
+    ...(found.contentLength === null ? {} : { "content-length": found.contentLength }),
+    "cache-control": "public, max-age=31536000, immutable",
+    "x-content-type-options": "nosniff",
   });
-  stream.once("open", () => {
-    res.writeHead(200, {
-      "content-type": found.contentType,
-      "cache-control": "public, max-age=31536000, immutable",
-      "x-content-type-options": "nosniff",
-    });
-    stream.pipe(res);
+  found.body.on("error", (error) => {
+    console.error(`[game] image stream failed for ${filename}`, error);
+    res.destroy();
   });
+  found.body.pipe(res);
 };
 
 const httpServer = createServer((req, res) => {
@@ -61,7 +75,7 @@ const httpServer = createServer((req, res) => {
   }
 
   if (req.url?.startsWith("/img/")) {
-    serveImage(req.url.slice("/img/".length), res);
+    void serveImage(req.url.slice("/img/".length), res);
     return;
   }
 
@@ -105,7 +119,9 @@ const sweepTimer = setInterval(() => {
 httpServer.listen(config.port, () => {
   console.log(`[game] listening on :${config.port}`);
   console.log(`[game] allowed origins: ${config.allowedOrigins.join(", ")}`);
-  console.log(`[game] round bank in Postgres, images at ${config.dataDir} served from ${config.publicBaseUrl}/img/`);
+  console.log(
+    `[game] round bank in Postgres, images in ${config.s3.bucket} at ${config.s3.endpoint}, served from ${config.publicBaseUrl}/img/`,
+  );
 });
 
 const shutdown = (signal: string) => {

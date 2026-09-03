@@ -79,7 +79,7 @@ appears is a round half the room missed the start of.
 Content is **produced and consumed by different processes**, and that split is
 the architecture — visible in the workspace layout. `packages/bank` is the
 seam both processes share: a persistent pool of verified rounds — Postgres
-(through Drizzle) plus a directory of content-addressed images — behind
+(through Drizzle) plus a bucket of content-addressed images — behind
 `RoundRepository` and `ImageStore`. `apps/game/src/bank/source.ts` is the consuming side, answering
 a build in ~0ms. `tools/fill` is the producing side: DeepSeek, asked for a
 round, by a service the operator runs and watches. The server only ever talks
@@ -129,12 +129,38 @@ Rounds from before a language existed are simply rounds without that
 language's text — dealt to English lobbies and passed over for German ones,
 which is what an empty German shelf looks like until a fill run stocks it.
 
-**Images are self-hosted.** The generator downloads the picture — whole file,
-capped, format verified by magic bytes rather than by anybody's content-type
-header — and the bank stores it content-addressed (SHA-256 filename) and serves
-it from this server's own origin at `/img/<hash>.<ext>`. Players never load
-from a third-party host, so hotlink blocks, CORS and link rot cannot kill a
-round at render time. The source URL is kept in the bank for attribution.
+**Images are self-hosted, in a private bucket.** The generator downloads the
+picture — whole file, capped, format verified by magic bytes rather than by
+anybody's content-type header — and the bank stores it content-addressed
+(SHA-256 name) in S3-compatible object storage, from where the game server
+reads it and serves it at its own origin's `/img/<hash>.<ext>`. Players never
+load from a third-party host, so hotlink blocks, CORS and link rot cannot kill
+a round at render time. The source URL is kept in the bank for attribution.
+
+**The bucket is a store, not an origin.** `packages/bank/src/s3.ts` is the
+implementation both processes run (`createS3ImageStore`); `images.ts` keeps the
+naming rule, the content types and `createDiskImageStore`, which is now only
+the tests' store — a temp directory needs no credentials. The round in the
+database holds a *name*, never a URL, so where the bytes live is one
+implementation of `ImageStore` and nothing else in the codebase knows.
+
+Serving through the server rather than pointing browsers at the bucket is the
+deliberate half. It keeps the credentials in one process, the bucket
+unreadable to the world, and — the part that matters — it keeps `/img/<hash>`
+meaning exactly what it meant when the picture was a file, so moving the
+pictures cost no migration of the rounds that point at them. What it costs is
+a hop: the server reads the object on every browser cache miss. Content
+addressing makes that once per picture per browser, forever, which is why
+there is no cache in front of it.
+
+The pictures moved because the alternative was a *volume*. A `DATA_DIR` on a
+disk that survives restarts is a promise a deploy has to keep, and the deploy
+that forgets it does not fail — it comes up with an empty image directory
+beside a full database and 404s every round. The server now carries nothing on
+disk at all. `pnpm migrate:images` is the one-way move that got the existing
+pictures across: it verifies each file against the hash it is named by, skips
+what is already in the bucket, deletes nothing, and exits non-zero if anything
+was left behind.
 
 `tools/fill/src/content/deepseek.ts` produces rounds, and three things make the
 reply safe to parse, none of them hope:
@@ -413,12 +439,12 @@ driven by Turborepo:
 ```
 apps/web/           # Next.js app. Renders UI. Holds no game state.
 apps/game/          # Node + Socket.IO server. Owns all lobby state, in memory.
-                    # Reads the round bank; its data/ holds the bank's images/.
+                    # Reads the round bank; carries nothing on disk.
 tools/fill/         # The fill service: the only process that calls the AI.
                     # Writes the round bank the game server reads.
 packages/protocol/  # Shared TypeScript types for every socket event.
 packages/bank/      # The round bank: repository, Drizzle schema, Postgres,
-                    # image store — the seam apps/game and tools/fill share
+                    # S3 image store — the seam apps/game and tools/fill share
                     # instead of each other.
 ```
 
@@ -443,10 +469,11 @@ Socket.IO, pnpm, Turborepo.
 
 **Deployment:** a long-running Node host (Railway, Fly.io, Render, VPS) — *not*
 Vercel serverless, which cannot hold sockets or in-memory state. The round bank
-needs a Postgres (`DATABASE_URL`) and, for its images, a disk that survives
-restarts (`DATA_DIR`) — or every deploy starts with a cold pool;
-`PUBLIC_BASE_URL` must be the origin players reach the game server on, because
-banked image URLs are built from it.
+needs a Postgres (`DATABASE_URL`) and, for its images, an S3-compatible bucket
+(`S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`) — no
+volume, and nothing on the container's disk to lose. `PUBLIC_BASE_URL` must be
+the origin players reach the game server on, because banked image URLs are
+built from it.
 
 **Dev:** `pnpm dev` at the root runs both — web on :3000, game server on :3001.
 The client connects via `NEXT_PUBLIC_SOCKET_URL`. Socket.IO gets an explicit
@@ -463,13 +490,14 @@ variables properly and ships no `.env` at all.
 
 Turbo runs tasks in **strict env mode**, which means a variable the shell
 exports does not reach a task unless `turbo.json` names it. `PORT`,
-`CORS_ORIGINS`, `DATABASE_URL`, `DATA_DIR` and `PUBLIC_BASE_URL` are listed
-under `passThroughEnv` on `dev` and `start`, and `DEEPSEEK_API_KEY`,
-`DEEPSEEK_MODEL`, `DEEPSEEK_REASONING_EFFORT`, `DATABASE_URL` and `DATA_DIR`
-on `fill` — passed through
+`CORS_ORIGINS`, `DATABASE_URL`, the four `S3_*` variables and
+`PUBLIC_BASE_URL` are listed under `passThroughEnv` on `dev` and `start`, and
+`DEEPSEEK_API_KEY`, `DEEPSEEK_MODEL`, `DEEPSEEK_REASONING_EFFORT`,
+`DATABASE_URL` and the same `S3_*` on `fill` — passed through
 rather than hashed, because they are runtime configuration and some of them
 are secrets. A new runtime variable has to be added there or it will silently
-go missing.
+go missing. `DATA_DIR` survives on the `migrate:images` task alone, which is
+the only thing left that wants to know where the pictures used to be.
 
 **Lobbies are memory; content is an asset.** Lobby state lives in the game
 server's process and dies with it — deliberately, see Lobbies. The round bank
@@ -830,6 +858,17 @@ draws, cross-language aliases, and the misses that fail a round — against it;
 and `tools/fill`'s `fill.test.ts` drives the producing side — thinnest shelf
 first, exclusion lists, benching and backoff — with a stub generator and a
 fake image store.
+
+The image store is tested where it can be. A bucket cannot be booted in a test
+the way Postgres can, so `packages/bank`'s `images.test.ts` argues the two
+things that do not need one: the **naming rule**, which is the only place a
+malformed `/img/` name is refused and therefore the only thing standing between
+the route and a traversal — a real file under a name the store would never
+issue has to be a miss *because of the name*, not because it happened to be
+absent — and `readS3Config`, which is where a deploy that forgot a variable is
+caught by the variable's own name. What is left untested is the SDK's
+conversation with a server, which is why `init()` does a `HeadBucket` at boot:
+the check a test cannot make, made once, where it is cheap.
 
 ## Open Questions
 

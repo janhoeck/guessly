@@ -27,7 +27,9 @@ dist
 # turborepo
 .turbo
 
-# the game server's round bank images (rounds themselves live in Postgres)
+# where the round bank images used to live, before they moved into the S3
+# bucket. Nothing writes here any more; the rule stays so a restored backup or
+# a pre-migration checkout cannot put 100MB of pictures into a commit.
 apps/game/data/
 
 # misc

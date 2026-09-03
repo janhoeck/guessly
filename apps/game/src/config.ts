@@ -1,4 +1,5 @@
 import { fileURLToPath } from "node:url";
+import { readS3Config, type S3ImageStoreConfig } from "@guessly/bank";
 
 /**
  * Read `apps/game/.env` into `process.env`, if there is one.
@@ -47,11 +48,12 @@ export interface Config {
    */
   allowedOrigins: string[];
   /**
-   * Where the bank's image files live. The rounds themselves are in Postgres
-   * now, but what they show is still content-addressed files on disk, so a
-   * deploy must put this on a disk that outlives the container.
+   * The bucket the bank's pictures live in — the same one the fill tool
+   * writes. They used to be files under a `DATA_DIR` this process had to be
+   * given a surviving disk for; now the server carries no state on disk at
+   * all, and a deploy that loses its filesystem loses nothing.
    */
-  dataDir: string;
+  s3: S3ImageStoreConfig;
   /**
    * The origin a *player's browser* reaches this server on. Banked images are
    * served from here (`/img/...`), and the URL goes out in the snapshot, so
@@ -94,12 +96,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     throw new Error('CORS_ORIGINS must name origins explicitly; "*" is never allowed');
   }
 
-  // Resolved against this module for the same reason as the .env file above:
-  // the default has to land on apps/game/data whatever directory the server
-  // was started from. The fill tool defaults to the same directory — filling
-  // any other bank would be pouring water beside the glass.
-  const dataDir =
-    (env.DATA_DIR ?? "").trim() || fileURLToPath(new URL("../data", import.meta.url));
+  // No default and no fallback: there is one bucket, and a server pointed at
+  // the wrong one deals rounds whose pictures 404. The fill tool reads the
+  // same four variables through the same function.
+  const s3 = readS3Config(env, "apps/game");
 
   const publicBaseUrl = ((env.PUBLIC_BASE_URL ?? "").trim() || `http://localhost:${port}`)
     .replace(/\/+$/, "");
@@ -109,5 +109,5 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     );
   }
 
-  return { port, databaseUrl, allowedOrigins, dataDir, publicBaseUrl };
+  return { port, databaseUrl, allowedOrigins, s3, publicBaseUrl };
 }

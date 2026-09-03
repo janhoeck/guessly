@@ -1,6 +1,5 @@
-import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { createImageStore, createPostgresRoundRepository, RoundSourceError } from "@guessly/bank";
+import { createPostgresRoundRepository, createS3ImageStore, RoundSourceError } from "@guessly/bank";
 import { loadEnvFile, loadFillConfig } from "./config.js";
 import { createDeepSeekRoundGenerator } from "./content/deepseek.js";
 import { createBankFiller, type Shelf } from "./fill.js";
@@ -28,7 +27,7 @@ loadEnvFile();
 const config = loadFillConfig();
 
 const repository = createPostgresRoundRepository(config.databaseUrl);
-const images = createImageStore(join(config.dataDir, "images"));
+const images = createS3ImageStore(config.s3);
 await repository.init();
 await images.init();
 
@@ -65,7 +64,7 @@ process.on("SIGTERM", () => stop("SIGTERM"));
 
 printShelves(await filler.shelves());
 console.log(
-  `[fill] filling with ${config.deepseekModel} (${config.deepseekReasoningEffort} reasoning effort), images into ${config.dataDir} — Ctrl+C to stop`,
+  `[fill] filling with ${config.deepseekModel} (${config.deepseekReasoningEffort} reasoning effort), images into ${config.s3.bucket} at ${config.s3.endpoint} — Ctrl+C to stop`,
 );
 
 let banked = 0;

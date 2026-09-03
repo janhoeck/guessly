@@ -1,6 +1,6 @@
 /**
  * The round bank: verified rounds at rest — Postgres for what each round asks
- * and accepts, a directory of content-addressed files for what it shows.
+ * and accepts, a bucket of content-addressed objects for what it shows.
  *
  * Two processes share this package and the database behind it: the game server
  * draws and deals (`apps/game`), and the fill tool generates and inserts
@@ -16,4 +16,12 @@ export {
 } from "./repository.js";
 export { createPostgresRoundRepository } from "./postgres.js";
 export { createInMemoryRoundRepository } from "./memory.js";
-export { createImageStore, type ImageStore, type StorableImage } from "./images.js";
+export {
+  createDiskImageStore,
+  imageContentType,
+  imageFilename,
+  type ImageStore,
+  type StorableImage,
+  type StoredImage,
+} from "./images.js";
+export { createS3ImageStore, readS3Config, type S3ImageStoreConfig } from "./s3.js";

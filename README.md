@@ -10,7 +10,7 @@ A pnpm workspace driven by [Turborepo](https://turborepo.com):
 ```
 apps/web/           # Next.js app. Renders UI. Holds no game state.
 apps/game/          # Node + Socket.IO server. Owns all lobby state, in memory.
-                    # Reads the round bank; its data/ holds the bank's images/.
+                    # Reads the round bank; carries nothing on disk.
 tools/fill/         # The fill service: the only process that calls the AI.
                     # Writes the round bank the game server reads.
 packages/protocol/  # Shared TypeScript types for every socket event.
@@ -29,7 +29,9 @@ pnpm install
 cp apps/web/.env.example apps/web/.env.local
 cp apps/game/.env.example apps/game/.env
 cp tools/fill/.env.example tools/fill/.env
-# then put a real key in tools/fill/.env
+# then put a real key in tools/fill/.env, and a Postgres and an image bucket
+# in apps/game/.env — DATABASE_URL and the four S3_* variables. Both processes
+# read the same two, and neither has a local fallback: there is one bank.
 pnpm dev
 ```
 
@@ -53,6 +55,7 @@ inputs have not changed.
 |---|---|
 | `pnpm dev` | Web, game server and shared-package watchers together |
 | `pnpm fill` | Stocks the round bank with AI-generated rounds until Ctrl+C |
+| `pnpm migrate:images` | One-way move of any on-disk pictures into the bucket |
 | `pnpm build` | Builds the shared packages, then everything on top |
 | `pnpm start` | Runs the production builds |
 | `pnpm lint` | ESLint |
@@ -68,9 +71,18 @@ with `pnpm turbo run build --filter @guessly/web`.
 Two long-running Node processes on a host that can hold sockets and in-memory
 state (Railway, Fly.io, Render, a VPS) — *not* Vercel serverless. Lobby state
 is memory and dies with the process; the round bank needs a Postgres
-(`DATABASE_URL`) and, for its images, a disk that survives restarts
-(`DATA_DIR`, default `apps/game/data`) — or every deploy starts with an empty
-bank. `PUBLIC_BASE_URL` must be the origin players reach the game server on,
-because banked image URLs are built from it. The fill service runs wherever it
-can reach that same database and directory — on the host, or locally through a
-tunnel — and only while you want the bank to grow.
+(`DATABASE_URL`) and, for its images, an S3-compatible bucket (`S3_ENDPOINT`,
+`S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`). Neither process
+keeps anything on disk, so there is no volume to provision and none to forget.
+The bucket stays private: the game server reads objects out of it and serves
+them from its own origin at `/img/<hash>.<ext>`, so `PUBLIC_BASE_URL` must be
+the origin players reach the game server on, because banked image URLs are
+built from it. The fill service runs wherever it can reach that same database
+and bucket — on the host, or locally — and only while you want the bank to
+grow.
+
+If you are coming from a checkout that still has pictures under
+`apps/game/data/images`, `pnpm migrate:images` moves them into the bucket. It
+verifies every file against the hash it is named by, skips what is already
+there, is safe to re-run, and deletes nothing — the directory is yours to
+remove once it reports that everything arrived.

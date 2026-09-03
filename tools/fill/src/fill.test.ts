@@ -83,7 +83,8 @@ function fakeImages(): ImageStore & { saved: StorableImage[] } {
       saved.push(image);
       return `${String(saved.length).padStart(64, "0")}.${image.extension}`;
     },
-    resolve: () => null,
+    has: async () => false,
+    open: async () => null,
   };
 }
 

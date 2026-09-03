@@ -2,14 +2,13 @@
 
 import { toast } from "sonner"
 import {
-  err,
-  type Ack,
   type GuessResult,
   type LanguageId,
   type LobbyState,
   type TopicId,
 } from "@guessly/protocol"
 
+import { guard } from "@/lib/ack"
 import { desertionNotice } from "@/lib/desertion-notice"
 import { clearSeat, readSeat, writeSeat } from "@/lib/session"
 import { getSocket } from "@/lib/socket"
@@ -134,34 +133,6 @@ function receive(state: LobbyState): void {
   clockOffset = state.serverNow - Date.now()
   warnAboutDesertion(snapshot.state, state)
   set({ state })
-}
-
-/**
- * Long enough to cover a cold connection, short enough that a dead server does
- * not leave a button spinning. Socket.IO buffers an emit made while the socket
- * is still connecting, so this covers the connect and the round trip together.
- */
-const ACK_TIMEOUT_MS = 8_000
-
-/**
- * Every ack is a Result, but a server that never answers sends no Result at
- * all. This turns silence into one — the same shape, so callers have a single
- * path to handle.
- */
-function guard<T>(handle: (result: Ack<T>) => void): (result: Ack<T>) => void {
-  let settledOnce = false
-  const timer = setTimeout(() => {
-    if (settledOnce) return
-    settledOnce = true
-    handle(err<T>("SERVER_ERROR", "The game server is not answering."))
-  }, ACK_TIMEOUT_MS)
-
-  return (result) => {
-    if (settledOnce) return
-    settledOnce = true
-    clearTimeout(timer)
-    handle(result)
-  }
 }
 
 function forget(): void {

@@ -1,23 +1,29 @@
+import { LobbyBrowser } from "@/components/lobbies/lobby-browser"
 import { SiteHeader } from "@/components/site/site-header"
 
 /**
- * A placeholder, so the header's second link goes somewhere real.
+ * Every lobby that is open right now, and a way into the ones that will have
+ * you.
  *
- * There is nothing here yet on purpose — the browsable list of open lobbies is
- * the next session's work. It exists now because a nav item pointing at a 404
- * is worse than an empty page, and because typed routes will not accept an
- * `href` with no page behind it.
+ * A composition like every other page here: it holds no state, imports nothing
+ * from `lib/`, and stays a server component. `LobbyBrowser` is the one client
+ * island, and the boundary stops there — the header, the heading and the copy
+ * around it render on the server and never re-render at all.
  */
 export default function LobbiesPage() {
   return (
     <>
       <SiteHeader />
-      <main className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-4 px-6 py-16">
-        <h1 className="font-heading text-3xl font-semibold">Lobbies</h1>
-        <p className="max-w-[54ch] text-muted-foreground">
-          Nothing to browse yet. For now a lobby is reached by its code — make
-          one on the home page and read the code out.
-        </p>
+      <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-8 px-6 py-12 sm:py-16">
+        <div className="flex flex-col gap-3">
+          <h1 className="font-heading text-3xl font-semibold">Open lobbies</h1>
+          <p className="max-w-[54ch] text-muted-foreground">
+            Pick a room and take a seat. A game already under way stays on the
+            list so you can see it — you just cannot get into it until it ends.
+          </p>
+        </div>
+
+        <LobbyBrowser />
       </main>
     </>
   )

@@ -493,6 +493,14 @@ the next-game panel render from the snapshot like everything else — the panel
 reuses the lobby modal's own controls, so a control gained in one place is
 gained in both.
 
+**Finding a lobby is a route; the lobby you find is still a modal.**
+`/lobbies` is a composition like every other page — `components/lobbies/lobby-browser.tsx`
+is its one island, subscribed to `lib/lobby-list.ts` the way the game screens are
+subscribed to `lib/lobby-client.ts`. Joining from it opens the same dialog over
+the same page, because `components/lobby/lobby-presence.tsx` owns both the
+dialog and the move to `/<CODE>` when the game starts — the landing page and the
+browse page render that one component rather than arguing the rule twice.
+
 **The lobby is a modal; the game is a route.** A lobby is a room you are *in*,
 so it opens over the landing page from `components/landing/entry-form.tsx` —
 still the only client island there. A running game is somewhere you have gone,
@@ -541,6 +549,12 @@ there before touching a value, and run `pnpm test` after. The yellow `--primary`
 is the single call to action on a screen; `--brand-cyan` and `--brand-pink` are
 decorative only (rules, indicators, plates), never text and never a hover
 surface.
+
+The browse list is the one screen with more than one yellow button, and it is
+not an exception to the rule so much as the rule read literally: every joinable
+row *is* the call to action, and picking which room to walk into is the only
+thing the page is for. A row that cannot be joined drops back to `secondary`,
+so the yellow still marks exactly what a click will do.
 
 **Sound is garnish, and one voice.** Four sounds — countdown tick, GO, right,
 wrong — all from one CC0 pack (Kenney's Interface Sounds, see
@@ -644,6 +658,38 @@ Grace periods differ by phase on purpose:
   connected to play, the game is called off 30s later and everybody keeps their
   score — see Winning.
 
+**Every lobby is browsable.** `/lobbies` lists the rooms that exist right now —
+the code, how many seats are taken, what language the rounds come in — and
+joining one is the same `lobby:join` the code field on the landing page sends.
+A room code used to be a thing you read out to four friends; the browse list
+makes it a door anybody can knock on, and that is the trade this page is. What
+it does not change is *who may take a seat*: a lobby that has started or filled
+up refuses a newcomer exactly as it did before.
+
+- **A lobby nobody is connected to is not listed.** Seats are held for a while
+  after a tab closes, so the record outlives the room — but a lobby whose only
+  occupant has gone is one the sweep is already on its way to delete, and
+  walking somebody into it is worse than not mentioning it. The count is
+  *seats* rather than connections, because seats are what the cap counts and
+  therefore what decides whether one more fits.
+- **A game in progress stays on the list**, and says so. It is greyed out with
+  a pink indicator rather than hidden: a room mid-round is the most interesting
+  kind of unavailable, and a list that quietly dropped it would read as a lobby
+  that had closed. Same for a `finished` one, which shows as *Between games* —
+  a rematch is for the seats already in it.
+- **`joinable` rides in the summary rather than being re-derived.**
+  `LobbySummary` is not a trimmed `LobbyState`: it goes to people who are not in
+  the lobby, so it carries no player ids, no nicknames and no round. The one
+  field that is a *judgement* — can somebody take a seat here — is the store's
+  own answer, read off the same two predicates `join` uses, so a row the list
+  offers is a row that will let you in.
+- **It is a subscription, not a poll.** `lobby:browse` acks with the list and
+  puts the socket in a room that is pushed `lobby:list` when it changes;
+  `lobby:unbrowse` leaves. The push is guarded by a digest of what the room was
+  last told, because a twelve-player lobby is mutated by every guess in it and
+  almost none of that is visible from outside. With nobody browsing the list is
+  never even built.
+
 ## Realtime Protocol
 
 Every client→server event takes an ack callback returning a Result, so nothing
@@ -667,6 +713,8 @@ type Ack<T> =
 | `lobby:setLanguage` | `{ language }` — host only, while `lobby` or `finished` | `{}` |
 | `lobby:start` | — host only, while `lobby` or `finished`; from `finished` it is the rematch and resets every score | `{}` |
 | `round:guess` | `{ roundNumber, guess }` | `{ correct: false }` or `{ correct: true, points, elapsedMs }` |
+| `lobby:browse` | — | `{ lobbies }` — every lobby somebody is in |
+| `lobby:unbrowse` | — | `{}` |
 | `lobby:leave` | — | `{}` |
 
 **Server → client**
@@ -675,6 +723,7 @@ type Ack<T> =
 |---|---|
 | `lobby:state` | full lobby snapshot, including `round` and `serverNow` |
 | `lobby:closed` | `{ reason }` |
+| `lobby:list` | `{ lobbies }` — the browse list, in full, and only when it changed |
 | `round:failed` | `{ message }` — the lobby is already back in `lobby` status |
 
 The server sends a **full snapshot on every lobby mutation** — no incremental
@@ -716,6 +765,11 @@ arguments and are tested on their own, which is where "would a player call this
 right?" is argued rather than in the store. A thin adapter maps socket events to
 store calls; integration tests with a real Socket.IO client cover join → drop →
 resume, a game called off by a drop, and the error acks.
+
+The browse list is tested from both of its ends. The store's own tests argue
+what belongs on it — a full lobby, a running one, one nobody is connected to,
+and the order they come back in — and the socket tests argue the subscription,
+including the change that must *not* be pushed because no browser could see it.
 
 `game/rounds.ts` has its own tests for the clocks the socket tests cannot wait
 out. They drive the runner against a real store and a source that never answers,
@@ -768,6 +822,13 @@ These are deliberately not decided yet. Ask before assuming an answer:
   the generator for the missing entry of a round it already has the picture for
   would be cheap and is unwritten; whether it is worth writing depends on how
   often a language is added, which is so far never.
+- **Every lobby is listed, and none of them chose to be.** `/lobbies` shows
+  whatever exists, so a group who only meant to play among themselves is
+  discoverable by a stranger who reloads at the right moment. Nothing is opened
+  that the code did not already open — joining is unchanged, and a started or
+  full lobby still refuses — but an unlisted flag is an obvious thing to want
+  and is unwritten. Whether it is worth having depends on whether strangers turn
+  out to be the point of the page or the problem with it.
 - **The bank has no curator** — nothing retires a round nobody solves, nothing
   turns near-miss guesses into aliases, and nothing decides how deep a topic's
   shelf *should* be: the fill tool fills evenly for as long as it runs. The

@@ -1317,6 +1317,103 @@ describe("sweep", () => {
   });
 });
 
+describe("the browse list", () => {
+  /** One store, with lobbies made to order rather than by `lobbyOf`. */
+  function browsable() {
+    const harness = testStore();
+    const open = (nickname: string, guests: number) => {
+      const host = unwrap(harness.store.create(creating({ nickname })));
+      const joiners = Array.from({ length: guests }, (_, index) =>
+        unwrap(harness.store.join({ code: host.code, nickname: `${nickname}-guest${index}` })),
+      );
+      return { ...host, joiners };
+    };
+    return { ...harness, open };
+  }
+
+  it("shows a waiting lobby's code, its seats and its language", () => {
+    const { store, open } = browsable();
+    const host = open("host", 2);
+    unwrap(store.setLanguage(host.code, host.playerId, "de"));
+
+    expect(store.list()).toEqual([
+      { code: host.code, status: "lobby", players: 3, language: "de", joinable: true },
+    ]);
+  });
+
+  it("still lists a game in progress, and will not offer it", () => {
+    const { store, open } = browsable();
+    const host = open("host", 1);
+    unwrap(store.start(host.code, host.playerId));
+
+    expect(store.list()).toEqual([
+      { code: host.code, status: "countdown", players: 2, language: "en", joinable: false },
+    ]);
+  });
+
+  it("still lists a finished game, and will not offer it either", () => {
+    const { store, open } = browsable();
+    const host = open("host", 1);
+    unwrap(store.start(host.code, host.playerId));
+    // The second seat walking out of a two-player game ends it.
+    store.leave(host.code, host.joiners[0]!.playerId);
+
+    expect(store.list()).toMatchObject([{ status: "finished", players: 1, joinable: false }]);
+  });
+
+  it("will not offer a lobby that is already full", () => {
+    const { store, open } = browsable();
+    open("host", MAX_PLAYERS_PER_LOBBY - 1);
+
+    expect(store.list()).toMatchObject([
+      { status: "lobby", players: MAX_PLAYERS_PER_LOBBY, joinable: false },
+    ]);
+  });
+
+  it("counts a seat whose owner has dropped, because the cap does", () => {
+    const { store, open } = browsable();
+    const host = open("host", 1);
+    unwrap(store.start(host.code, host.playerId));
+    store.disconnect(host.code, host.joiners[0]!.playerId);
+
+    expect(store.list()).toMatchObject([{ players: 2 }]);
+  });
+
+  it("leaves out a lobby nobody is connected to", () => {
+    const { store, open } = browsable();
+    const host = open("host", 0);
+    store.disconnect(host.code, host.playerId);
+
+    // The seat is held for another minute yet; the room is empty all the same.
+    expect(store.snapshot(host.code)).not.toBeNull();
+    expect(store.list()).toEqual([]);
+  });
+
+  it("leaves out a lobby that has gone", () => {
+    const { store, open } = browsable();
+    const host = open("host", 0);
+    store.leave(host.code, host.playerId);
+
+    expect(store.list()).toEqual([]);
+  });
+
+  it("puts the lobbies you can join first, and the newest of those first", () => {
+    const { store, open, advance } = browsable();
+    const first = open("first", 1);
+    advance(1_000);
+    const playing = open("playing", 1);
+    advance(1_000);
+    const newest = open("newest", 1);
+    unwrap(store.start(playing.code, playing.playerId));
+
+    expect(store.list().map((lobby) => lobby.code)).toEqual([
+      newest.code,
+      first.code,
+      playing.code,
+    ]);
+  });
+});
+
 describe("the snapshot", () => {
   it("carries no resume token and no join time", () => {
     const { store, code, host } = lobbyOf(2);

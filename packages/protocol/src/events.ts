@@ -1,6 +1,6 @@
 import type { Ack } from "./errors.js";
 import type { LanguageId } from "./languages.js";
-import type { LobbyState } from "./lobby.js";
+import type { LobbyState, LobbySummary } from "./lobby.js";
 import type { TopicId } from "./topics.js";
 
 export interface CreateLobbyPayload {
@@ -51,6 +51,18 @@ export interface ResumeLobbyPayload {
 
 export interface ResumeLobbyResult {
   state: LobbyState;
+}
+
+/**
+ * Every lobby worth knocking on, in the order the server wants them read: the
+ * ones that will let you in first, newest first within that.
+ *
+ * It is the browse screen's whole state, sent whole — the same rule the lobby
+ * snapshot follows and for the same reason. A list of a few dozen short rows is
+ * cheaper to resend than a set of incremental events would be to get right.
+ */
+export interface LobbyListPayload {
+  lobbies: LobbySummary[];
 }
 
 export interface SetTargetPayload {
@@ -127,6 +139,21 @@ export interface ClientToServerEvents {
     payload: ResumeLobbyPayload,
     ack: (result: Ack<ResumeLobbyResult>) => void,
   ) => void;
+  /**
+   * Start watching the list of open lobbies, and get it back in the ack so the
+   * page has something to render without waiting for a push.
+   *
+   * A subscription rather than a poll: the list changes when somebody creates,
+   * joins, leaves or starts a game, and those are exactly the moments a browser
+   * wants to see. It is also the one client event that is not about a lobby you
+   * are in, so it needs no seat.
+   */
+  "lobby:browse": (ack: (result: Ack<LobbyListPayload>) => void) => void;
+  /**
+   * Stop watching. Sent when the browse screen goes away, so a tab that has
+   * moved on is not pushed a list nobody is looking at.
+   */
+  "lobby:unbrowse": (ack: (result: Ack<Record<string, never>>) => void) => void;
   /** Host only. */
   "lobby:setTarget": (
     payload: SetTargetPayload,
@@ -169,6 +196,12 @@ export interface ServerToClientEvents {
   /** Sent in full on every lobby mutation. There are no incremental events. */
   "lobby:state": (state: LobbyState) => void;
   "lobby:closed": (payload: LobbyClosedPayload) => void;
+  /**
+   * The browse list, in full, to whoever is watching it. Sent only when it has
+   * actually changed: a room of twelve people guessing mutates its lobby
+   * constantly and changes nothing a browser can see.
+   */
+  "lobby:list": (payload: LobbyListPayload) => void;
   "round:failed": (payload: RoundFailedPayload) => void;
 }
 

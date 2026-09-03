@@ -8,6 +8,7 @@ import {
   type GuessResult,
   type InterServerEvents,
   type JoinLobbyResult,
+  type LobbyListPayload,
   type LobbyState,
   type ResumeLobbyResult,
   type ServerToClientEvents,
@@ -38,6 +39,12 @@ type GameSocket = Socket<ClientToServerEvents, ServerToClientEvents, InterServer
 
 type Seat = { lobbyCode: string; playerId: string };
 
+/**
+ * The room every browsing socket sits in. `@` is not in the room-code
+ * alphabet, so this can never be mistaken for a lobby of its own.
+ */
+const BROWSE_ROOM = "@browse";
+
 export interface SocketAdapter {
   /** One reaping tick, turned into socket traffic. Driven by a single interval. */
   sweep(): void;
@@ -58,8 +65,38 @@ export function registerSocketHandlers(
   const seats = new Map<string, string>();
   const seatKey = ({ lobbyCode, playerId }: Seat): string => `${lobbyCode}:${playerId}`;
 
+  /** Socket ids watching the lobby list. Empty means the list costs nothing. */
+  const browsers = new Set<string>();
+  /**
+   * What the browse room has already been told. Everyone in the room has seen
+   * exactly this, which is what lets the push below be skipped: a lobby is
+   * mutated by every guess in it and almost none of that is visible from
+   * outside, so without the comparison a twelve-player game would spray the
+   * same list at every browser twice a second.
+   */
+  let published = "";
+
+  const publishList = (): void => {
+    if (browsers.size === 0) return;
+    const lobbies = store.list();
+    const digest = JSON.stringify(lobbies);
+    if (digest === published) return;
+    published = digest;
+    io.to(BROWSE_ROOM).emit("lobby:list", { lobbies });
+  };
+
+  /**
+   * One mutation, posted to both audiences: the snapshot to the room it
+   * happened in, and — if it changed anything visible from outside — the browse
+   * list to whoever is watching for a game to join.
+   *
+   * A null state still publishes. It means "nothing the room can see changed",
+   * and the commonest way to get one is the last seat leaving, which deletes
+   * the lobby and is the most visible thing that can happen to the list.
+   */
   const broadcast = (state: LobbyState | null): void => {
     if (state) io.to(state.code).emit("lobby:state", state);
+    publishList();
   };
 
   /**
@@ -130,6 +167,12 @@ export function registerSocketHandlers(
     runner.rosterChanged(seat.lobbyCode);
   };
 
+  /** Stops pushing the list at a socket that has moved on or gone away. */
+  const stopBrowsing = (socket: GameSocket): void => {
+    if (!browsers.delete(socket.id)) return;
+    void socket.leave(BROWSE_ROOM);
+  };
+
   const requireSeat = (socket: GameSocket): Ack<Seat> => {
     const { lobbyCode, playerId } = socket.data;
     if (!lobbyCode || !playerId || seats.get(`${lobbyCode}:${playerId}`) !== socket.id) {
@@ -174,7 +217,10 @@ export function registerSocketHandlers(
         // Only give up the old seat once the new one is certain.
         releaseSeat(socket);
         claimSeat(socket, { lobbyCode: created.data.code, playerId: created.data.playerId });
-        // No broadcast: the room is this socket, and the ack already carries the state.
+        // No broadcast: the room is this socket, and the ack already carries
+        // the state. The browse list is another matter — a new lobby is the
+        // one thing everybody watching it is waiting for.
+        publishList();
         return created;
       }),
     );
@@ -214,6 +260,27 @@ export function registerSocketHandlers(
         // restarted, and the store will find it has a game again.
         runner.rosterChanged(resumed.data.state.code);
         return resumed;
+      }),
+    );
+
+    socket.on("lobby:browse", (ack) =>
+      run<LobbyListPayload>(ack, limiter, () => {
+        const lobbies = store.list();
+        browsers.add(socket.id);
+        void socket.join(BROWSE_ROOM);
+        // Stamped here rather than left to the next change: this socket has
+        // just been handed the list, so the room’s "everyone has seen this"
+        // invariant still holds and the next push is still only sent if
+        // something actually moved.
+        published = JSON.stringify(lobbies);
+        return ok({ lobbies });
+      }),
+    );
+
+    socket.on("lobby:unbrowse", (ack) =>
+      run<Record<string, never>>(ack, limiter, () => {
+        stopBrowsing(socket);
+        return ok({});
       }),
     );
 
@@ -306,6 +373,8 @@ export function registerSocketHandlers(
     );
 
     socket.on("disconnect", () => {
+      stopBrowsing(socket);
+
       const { lobbyCode, playerId } = socket.data;
       if (!lobbyCode || !playerId) return;
 
@@ -328,6 +397,10 @@ export function registerSocketHandlers(
       const { changed, closed } = store.sweep();
 
       for (const state of changed) io.to(state.code).emit("lobby:state", state);
+
+      // Reaped lobbies and revived ones alike; the sweep is the only mutation
+      // in the server that does not go through `broadcast`.
+      publishList();
 
       for (const { code, reason } of closed) {
         runner.cancel(code);

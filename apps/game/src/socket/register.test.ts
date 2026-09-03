@@ -16,6 +16,7 @@ import {
   type GuessResult,
   type JoinLobbyResult,
   type LobbyClosedPayload,
+  type LobbyListPayload,
   type LobbyState,
   type RoundContent,
 } from "@guessly/protocol";
@@ -764,6 +765,87 @@ describe("the sweep", () => {
 
     expect(await closed).toEqual({ reason: "idle" });
     expect(store.size()).toBe(0);
+  });
+});
+
+describe("browsing the open lobbies", () => {
+  /** Every list this client is pushed, in order, so a *lack* of one is testable. */
+  function collectLists(client: ClientSocket): LobbyListPayload[] {
+    const seen: LobbyListPayload[] = [];
+    client.on("lobby:list", (payload: LobbyListPayload) => seen.push(payload));
+    return seen;
+  }
+
+  it("answers with the lobbies that are open right now", async () => {
+    const { created } = await openLobby();
+    const browser = await connect();
+
+    const { lobbies } = unwrap(await emit<LobbyListPayload>(browser, "lobby:browse"));
+
+    expect(lobbies).toEqual([
+      { code: created.code, status: "lobby", players: 1, language: "en", joinable: true },
+    ]);
+  });
+
+  it("pushes a new list when a lobby appears", async () => {
+    const browser = await connect();
+    unwrap(await emit<LobbyListPayload>(browser, "lobby:browse"));
+
+    const pushed = nextEvent<LobbyListPayload>(browser, "lobby:list");
+    const { created } = await openLobby();
+
+    expect((await pushed).lobbies).toMatchObject([{ code: created.code, joinable: true }]);
+  });
+
+  it("pushes again when a game starts, so the row can stop offering itself", async () => {
+    const { host, created } = await readyToStart();
+    const browser = await connect();
+    unwrap(await emit<LobbyListPayload>(browser, "lobby:browse"));
+
+    const pushed = nextEvent<LobbyListPayload>(browser, "lobby:list");
+    await emit(host, "lobby:start");
+
+    expect((await pushed).lobbies).toMatchObject([
+      { code: created.code, status: "countdown", joinable: false },
+    ]);
+  });
+
+  it("says nothing about a change a browser cannot see", async () => {
+    const { host } = await openLobby();
+    const browser = await connect();
+    unwrap(await emit<LobbyListPayload>(browser, "lobby:browse"));
+    const seen = collectLists(browser);
+
+    // The target score is a lobby mutation and a full snapshot to the room.
+    // None of it is on the browse row, so nothing goes out here.
+    await emit(host, "lobby:setTarget", { targetScore: 200 });
+    await settle();
+
+    expect(seen).toEqual([]);
+  });
+
+  it("stops pushing once the browser says it has gone", async () => {
+    const browser = await connect();
+    unwrap(await emit<LobbyListPayload>(browser, "lobby:browse"));
+    await emit(browser, "lobby:unbrowse");
+    const seen = collectLists(browser);
+
+    await openLobby();
+    await settle();
+
+    expect(seen).toEqual([]);
+  });
+
+  it("drops a reaped lobby off the list", async () => {
+    await openLobby();
+    const browser = await connect();
+    unwrap(await emit<LobbyListPayload>(browser, "lobby:browse"));
+
+    const pushed = nextEvent<LobbyListPayload>(browser, "lobby:list");
+    clock += IDLE_LOBBY_TTL_MS;
+    adapter.sweep();
+
+    expect((await pushed).lobbies).toEqual([]);
   });
 });
 

@@ -33,6 +33,7 @@ import {
   type LobbyClosedReason,
   type LobbyState,
   type LobbyStatus,
+  type LobbySummary,
   type ResumeLobbyPayload,
   type ResumeLobbyResult,
   type RoundContent,
@@ -227,6 +228,16 @@ export interface LobbyStore {
   /** Involuntary drop. The seat is kept; how long depends on the phase. */
   disconnect(code: string, playerId: string): LobbyState | null;
   sweep(): SweepResult;
+  /**
+   * Every lobby somebody is actually in, for the browse screen.
+   *
+   * Not a list of snapshots: a browser is not in these lobbies and may never
+   * be, so what comes back is the summary — see `LobbySummary`. A lobby with
+   * nobody connected is left out rather than offered, because a room whose only
+   * occupant has closed their tab is a room the sweep is already on its way to
+   * delete, and walking somebody into it is worse than not mentioning it.
+   */
+  list(): LobbySummary[];
   snapshot(code: string): LobbyState | null;
   /** Operational visibility; no rule depends on it. */
   size(): number;
@@ -321,6 +332,17 @@ export function createLobbyStore(overrides: Partial<LobbyStoreDeps> = {}): Lobby
     }
     return null;
   };
+
+  /**
+   * The two halves of "can somebody take a seat here". Named rather than
+   * inlined because `join` and the browse list both have to answer it and must
+   * never answer it differently — a row the list offers has to be a row that
+   * lets you in. `join` still asks them separately, because which one refused
+   * you is the difference between two error codes.
+   */
+  const isOpen = (lobby: LobbyRecord): boolean => lobby.status === "lobby";
+  const isFull = (lobby: LobbyRecord): boolean => lobby.players.size >= MAX_PLAYERS_PER_LOBBY;
+  const isJoinable = (lobby: LobbyRecord): boolean => isOpen(lobby) && !isFull(lobby);
 
   const isNicknameTaken = (lobby: LobbyRecord, nickname: string): boolean => {
     const wanted = nickname.toLowerCase();
@@ -580,7 +602,7 @@ export function createLobbyStore(overrides: Partial<LobbyStoreDeps> = {}): Lobby
     join({ code, nickname }) {
       const lobby = lobbies.get(normalizeCode(code));
       if (!lobby) return err("LOBBY_NOT_FOUND", "No lobby with that code.");
-      if (lobby.status !== "lobby") {
+      if (!isOpen(lobby)) {
         // Late joiners cannot win from far behind, so the door shuts at kick-off.
         return err("GAME_IN_PROGRESS", "That game has already started.");
       }
@@ -589,7 +611,7 @@ export function createLobbyStore(overrides: Partial<LobbyStoreDeps> = {}): Lobby
       const nameError = checkNickname(name);
       if (nameError) return nameError;
 
-      if (lobby.players.size >= MAX_PLAYERS_PER_LOBBY) {
+      if (isFull(lobby)) {
         return err("LOBBY_FULL", `That lobby is full at ${MAX_PLAYERS_PER_LOBBY} players.`);
       }
       if (isNicknameTaken(lobby, name)) {
@@ -980,6 +1002,27 @@ export function createLobbyStore(overrides: Partial<LobbyStoreDeps> = {}): Lobby
       }
 
       return { changed, closed };
+    },
+
+    list() {
+      const open = [...lobbies.values()].filter((lobby) => presentCount(lobby) > 0);
+
+      // Joinable first, then newest first. Sorted here rather than in the
+      // client so every browser reads the same list in the same order, and
+      // because the ordering is an opinion about lobbies — which is the
+      // store’s subject, not the browse page’s.
+      open.sort(
+        (a, b) =>
+          Number(isJoinable(b)) - Number(isJoinable(a)) || b.createdAt - a.createdAt,
+      );
+
+      return open.map((lobby) => ({
+        code: lobby.code,
+        status: lobby.status,
+        players: lobby.players.size,
+        language: lobby.language,
+        joinable: isJoinable(lobby),
+      }));
     },
 
     snapshot(code) {

@@ -79,3 +79,30 @@ export interface LobbyState {
    */
   serverNow: number;
 }
+
+/**
+ * One row of the browse list.
+ *
+ * Deliberately *not* a trimmed `LobbyState`: this goes to people who are not in
+ * the lobby and may never be, so it carries no player ids, no nicknames and no
+ * round — only what somebody needs to decide whether to knock. The code is the
+ * exception, and it is the point: a lobby that can be browsed is a lobby whose
+ * code is public, which is a trade the browse list makes on purpose.
+ */
+export interface LobbySummary {
+  code: string;
+  status: LobbyStatus;
+  /**
+   * Seats taken, a dropped-but-held seat included — because that is the number
+   * the cap counts, so it is the number that decides whether one more fits.
+   */
+  players: number;
+  language: LanguageId;
+  /**
+   * The server's own answer to "could somebody take a seat right now?", rather
+   * than something the client re-derives from the two fields above it. `join`
+   * reads the same rule off the same record, so a row offered here is a row
+   * that will let you in, and a greyed-out one would have refused you.
+   */
+  joinable: boolean;
+}

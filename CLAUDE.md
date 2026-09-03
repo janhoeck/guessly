@@ -622,6 +622,17 @@ not one, and `playSound` degrading to silence — never an error, never a queue
 told: the wrong-sound rides the same one-person ack as the shake, so the room
 hears who scored and never who fumbled.
 
+**The tick counts a round out as well as in.** The last three seconds of the
+twenty get one a second — the same glass ding, not a fifth file, because it is
+the same event at either end of the round: a number changing next to zero. It
+is keyed on the second the clock is *displaying* rather than on a timer of its
+own, so the sound and the digit cannot drift apart and a tab returning from the
+background hears the second it came back to instead of a queue of the ones it
+missed. It is silent for a player who has already answered: the clock only runs
+on past a correct guess because somebody else is still typing, and their last
+three seconds are not this player's to be hurried by — the same reason the
+round ends the moment the *last* connected player gets it.
+
 ## Lobbies
 
 ```ts

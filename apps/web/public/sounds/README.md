@@ -7,7 +7,7 @@ Ogg Vorbis to mono 16-bit WAV, because Safari does not decode Vorbis.
 
 | File          | Pack original          | Used for                    |
 | ------------- | ---------------------- | --------------------------- |
-| `tick.wav`    | `glass_003.ogg`        | countdown 3 · 2 · 1         |
+| `tick.wav`    | `glass_003.ogg`        | 3 · 2 · 1, both countdowns  |
 | `go.wav`      | `confirmation_002.ogg` | countdown reaching GO       |
 | `correct.wav` | `confirmation_001.ogg` | a guess scored as right     |
 | `wrong.wav`   | `error_001.ogg`        | a guess coming back wrong   |

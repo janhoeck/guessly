@@ -114,7 +114,13 @@ function RoundStage({
 
       {!revealed && round.endsAt !== null && (
         <>
-          <RoundTimer startsAt={round.startsAt} endsAt={round.endsAt} />
+          {/* Silent for a player who already has it: the closing ticks are
+              for the people still typing. */}
+          <RoundTimer
+            startsAt={round.startsAt}
+            endsAt={round.endsAt}
+            silent={mine !== null}
+          />
           {/* Keyed on the round: a new round is a new field rather than three
               pieces of state somebody has to remember to clear. */}
           <GuessForm

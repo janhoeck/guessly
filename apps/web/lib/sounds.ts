@@ -7,8 +7,11 @@
  * pack on purpose, so they read as one voice: the tick is a short glass ding,
  * GO and a correct answer are rising chimes in different registers, and a miss
  * is a short falling glitch that is over before the field is ready to retype
- * into. The files are in `public/sounds/`, converted to mono WAV because
- * Safari does not decode Ogg Vorbis.
+ * into. The tick serves both of the game's countdowns — the three before a
+ * round and the three that close it — because it is the same event at either
+ * end, and a fifth file would have made two of them into two voices. The
+ * files are in `public/sounds/`, converted to mono WAV because Safari does not
+ * decode Ogg Vorbis.
  *
  * Web Audio rather than `<audio>` for two reasons that matter here. Latency: a
  * tick that lands late reads as a countdown that stutters, and buffer playback
@@ -24,7 +27,8 @@
 type SoundName = "tick" | "go" | "correct" | "wrong"
 
 /** Per-sound gain, balancing the sources' loudness — the tick sits under the
- *  round it announces, the verdicts sit a little above it. */
+ *  round it announces and the one it runs out of, the verdicts sit a little
+ *  above it. */
 const SOUNDS: Record<SoundName, { src: string; gain: number }> = {
   tick: { src: "/sounds/tick.wav", gain: 0.4 },
   go: { src: "/sounds/go.wav", gain: 0.5 },

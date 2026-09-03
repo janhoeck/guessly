@@ -4,14 +4,31 @@
  * The game's four sounds: the countdown tick, GO, a right answer, a wrong one.
  *
  * All four come from Kenney's "Interface Sounds" pack (kenney.nl, CC0) — one
- * pack on purpose, so they read as one voice: the tick is a short glass ding,
- * GO and a correct answer are rising chimes in different registers, and a miss
- * is a short falling glitch that is over before the field is ready to retype
- * into. The tick serves both of the game's countdowns — the three before a
- * round and the three that close it — because it is the same event at either
- * end, and a fifth file would have made two of them into two voices. The
- * files are in `public/sounds/`, converted to mono WAV because Safari does not
- * decode Ogg Vorbis.
+ * pack on purpose, so they read as one voice, and three of the four are
+ * literally one voice: `maximize`/`minimize` is a single soft chime played as
+ * a gesture, and the game uses that gesture three ways. GO is it rising in a
+ * low, warm register; a correct answer is the same rise an octave and a half
+ * up, so a score reads as the same event in a brighter key; a miss is the
+ * gesture inverted, falling, which is the direction everybody already reads as
+ * "no". The tick is the odd one out and has to be: it plays six times a round,
+ * so it is a short low bong rather than a chime — percussion under the chimes
+ * instead of a fourth note competing with them.
+ *
+ * **They are chosen to be quiet in the register the ear is sharpest in.** An
+ * earlier set was picked for meaning alone and was shrill: the miss put 44% of
+ * its energy above 2kHz and 24% above 4kHz — a thin metallic buzz that cuts
+ * through at almost no measured level — and the tick sat at 1.9kHz, near the
+ * peak of human hearing sensitivity, six times a round. Every sound here has
+ * *no* energy above 2kHz at all, and the gains below balance them by
+ * A-weighted loudness rather than by peak, which is why a number that looks
+ * low is not quiet. A sound is harsh because of where it sits, not how loud it
+ * is, so both were fixed and only one of them was a volume.
+ *
+ * The tick serves both of the game's countdowns — the three before a round and
+ * the three that close it — because it is the same event at either end, and a
+ * fifth file would have made two of them into two voices. The files are in
+ * `public/sounds/`, converted to mono 16-bit WAV because Safari does not decode
+ * Ogg Vorbis.
  *
  * Web Audio rather than `<audio>` for two reasons that matter here. Latency: a
  * tick that lands late reads as a countdown that stutters, and buffer playback
@@ -26,14 +43,20 @@
 
 type SoundName = "tick" | "go" | "correct" | "wrong"
 
-/** Per-sound gain, balancing the sources' loudness — the tick sits under the
- *  round it announces and the one it runs out of, the verdicts sit a little
- *  above it. */
+/**
+ * Per-sound gain, balancing the sources' *perceived* loudness — A-weighted,
+ * because the files are all normalised to the same peak and peaks are not what
+ * a person hears. The tick sits furthest under: it announces the round and runs
+ * it out, six times, and it is the one sound a player hears whether or not
+ * anything happened. GO and a right answer land together a little above it, and
+ * a miss just under those — audible enough to be the answer to "did that
+ * count?", quiet enough not to be a telling-off.
+ */
 const SOUNDS: Record<SoundName, { src: string; gain: number }> = {
-  tick: { src: "/sounds/tick.wav", gain: 0.4 },
-  go: { src: "/sounds/go.wav", gain: 0.5 },
-  correct: { src: "/sounds/correct.wav", gain: 0.55 },
-  wrong: { src: "/sounds/wrong.wav", gain: 0.45 },
+  tick: { src: "/sounds/tick.wav", gain: 0.34 },
+  go: { src: "/sounds/go.wav", gain: 0.42 },
+  correct: { src: "/sounds/correct.wav", gain: 0.28 },
+  wrong: { src: "/sounds/wrong.wav", gain: 0.28 },
 }
 
 let context: AudioContext | null = null

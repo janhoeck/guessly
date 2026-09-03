@@ -615,15 +615,33 @@ so the yellow still marks exactly what a click will do.
 **Sound is garnish, and one voice.** Four sounds — countdown tick, GO, right,
 wrong — all from one CC0 pack (Kenney's Interface Sounds, see
 `public/sounds/README.md`), so they read as a set rather than four apps
-talking at once. `lib/sounds.ts` owns playback: Web Audio for latency, the
-context unlocked on the first gesture anywhere because the countdown itself is
-not one, and `playSound` degrading to silence — never an error, never a queue
-— when audio is unavailable. A verdict sound plays only where the verdict is
-told: the wrong-sound rides the same one-person ack as the shake, so the room
-hears who scored and never who fumbled.
+talking at once. Three of them are one voice literally: GO, a score and a miss
+are a single soft chime played as a gesture — rising low, rising an octave and a
+half higher, and inverted to fall — so the room's three verdicts are one sound
+in three readings, and up-is-yes needs no learning. The tick stands outside it
+on purpose, being percussion rather than a fourth note, because it plays six
+times a round.
+
+**A sound is harsh because of where it sits, not how loud it is.** The first
+set was chosen for meaning alone and was shrill: the miss put 44% of its energy
+above 2kHz and 24% above 4kHz — a thin metallic buzz that cuts through at almost
+no measured level — and the tick sat at 1.9kHz, the peak of hearing sensitivity,
+six times a round. The set that replaced it has *no* energy above 2kHz at all,
+and `sounds.ts` balances the four by A-weighted loudness rather than by peak,
+since the files are all normalised to the same peak and a peak is not what
+anybody hears. Turning the volume down would not have fixed the first set, which
+is why the register is a rule and not a preference: a replacement sound has to
+be checked for where it sits, not only for sounding like the right event.
+
+`lib/sounds.ts` owns playback: Web Audio for latency, the context unlocked on
+the first gesture anywhere because the countdown itself is not one, and
+`playSound` degrading to silence — never an error, never a queue — when audio
+is unavailable. A verdict sound plays only where the verdict is told: the
+wrong-sound rides the same one-person ack as the shake, so the room hears who
+scored and never who fumbled.
 
 **The tick counts a round out as well as in.** The last three seconds of the
-twenty get one a second — the same glass ding, not a fifth file, because it is
+twenty get one a second — the same low bong, not a fifth file, because it is
 the same event at either end of the round: a number changing next to zero. It
 is keyed on the second the clock is *displaying* rather than on a timer of its
 own, so the sound and the digit cannot drift apart and a tab returning from the

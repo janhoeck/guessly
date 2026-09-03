@@ -50,7 +50,7 @@ export const SUBMIT_ROUND_INPUT_SCHEMA = {
       type: "array",
       items: { type: "string" },
       description:
-        "Image rounds only. Three to five direct https URLs to an image file, best first, each a canonical file name you are confident exists — ideally the Special:FilePath redirect form — on hosts that serve files to anyone. Empty array on a lyrics round.",
+        "Image rounds only. Three to five direct https URLs to an image file, best first, each copied verbatim from a search_images result — never a file name written from memory. Empty array on a lyrics round.",
     },
     lyrics_snippet: {
       type: "string",
@@ -343,7 +343,7 @@ export function parseSubmission(
   if (imageUrls.length === 0) {
     return reject(
       rawUrls.length === 0
-        ? "you submitted an image round with no image URLs at all. Search for the picture, then submit the URLs you saw."
+        ? "you submitted an image round with no image URLs at all. Call search_images for the subject, then submit URLs copied from its results."
         : `none of the ${rawUrls.length} URLs you gave could be an image: they have to be https and point straight at an image file.`,
     );
   }

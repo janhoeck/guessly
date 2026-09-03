@@ -14,6 +14,7 @@ import {
   type GenerationRequest,
   type RoundGenerator,
 } from "./source.js";
+import { formatImageResults, searchImages } from "./wikimedia.js";
 
 /**
  * The round generator, backed by DeepSeek through its OpenAI-compatible API.
@@ -36,11 +37,15 @@ import {
  * prompt prefix are shared, so a second language costs a few hundred output
  * tokens instead of a second round trip and a second download.
  *
- * DeepSeek cannot search the web, so an image round's URLs are written from
- * what the model already knows — the prompt steers it toward canonical,
- * rule-based file names for exactly that reason — and the download check
- * below is what stands between a misremembered file name and the bank. An
- * image round leaves here as *bytes*, downloaded and verified, not as a URL
+ * DeepSeek cannot browse, so an image round's URLs used to be written from
+ * what the model already knew — which works for file names that follow a rule
+ * (`Flag of France.svg`) and fails for everything else, whole topics at a
+ * time. It gets `search_images` instead: MediaWiki's API, keyless and on the
+ * same host the bytes come from, answering with file names that exist. The
+ * model still chooses the picture, because which file spells its own answer
+ * out is a judgement and a lookup has none. The download check below stands
+ * where it always did, now catching a bad *choice* rather than a bad memory:
+ * an image round leaves here as bytes, downloaded and verified, not as a URL
  * to hope about later.
  *
  * The V4 models think before they answer — enabled by default, at `high`
@@ -83,8 +88,21 @@ const DEFAULT_REASONING_EFFORT: ReasoningEffort = "low";
 const MAX_TOKENS = 8_192;
 const MAX_TOKENS_THINKING = 32_768;
 
-/** One turn to answer, and one more after each nudge back toward the tool. */
-const MAX_TURNS = 3;
+/**
+ * Turns in one attempt: a search or two, the submission, and a nudge or two
+ * back toward the tool if the model answers in prose. Higher than it was
+ * because a turn is no longer only a nudge — an image round spends its first
+ * one or two looking things up.
+ */
+const MAX_TURNS = 6;
+
+/**
+ * Lookups allowed per attempt. Two is a search and a rethink; past that the
+ * model is shopping rather than choosing, and every turn is another whole
+ * think billed. Running out is not a failure — it is told to submit from what
+ * it already has.
+ */
+const MAX_SEARCHES = 3;
 
 /**
  * How many whole rounds to ask for before giving up on the topic. Three since
@@ -119,11 +137,6 @@ const DEEPSEEK_BASE_URL = "https://api.deepseek.com";
 const SUBMIT_ROUND_DESCRIPTION =
   "Submit the finished round. Call this exactly once, as your final action, with the fields for the round kind you were given and one entry in versions for every language you were asked for.";
 
-/**
- * The one tool either kind of round gets. There is no search tool to add for
- * image rounds — DeepSeek has none to offer — so the list is the same stable
- * object every time, which suits the API's automatic prefix caching fine.
- */
 const SUBMIT_ROUND_TOOL: OpenAI.Chat.Completions.ChatCompletionTool = {
   type: "function",
   function: {
@@ -133,11 +146,55 @@ const SUBMIT_ROUND_TOOL: OpenAI.Chat.Completions.ChatCompletionTool = {
   },
 };
 
+export const SEARCH_IMAGES_TOOL_NAME = "search_images";
+
+/**
+ * The lookup, offered on image rounds only — a lyrics round has nothing to
+ * look up, and the two tool lists are two cache prefixes rather than one
+ * confused prompt. Eleven of twelve topics are image rounds, so the warm
+ * prefix stays warm.
+ */
+const SEARCH_IMAGES_TOOL: OpenAI.Chat.Completions.ChatCompletionTool = {
+  type: "function",
+  function: {
+    name: SEARCH_IMAGES_TOOL_NAME,
+    description:
+      "Find image files that actually exist on Wikimedia Commons and English Wikipedia. Returns real file names with their sizes, captions and ready-to-use URLs. Call this before submit_round on every image round and copy the URLs from its results — a file name written from memory is usually wrong.",
+    parameters: {
+      type: "object" as const,
+      properties: {
+        query: {
+          type: "string",
+          description:
+            'The subject to find pictures of, as its plain English name: "Minecraft", "Camp Nou", "Red panda". One subject per call; not a sentence and not a file name.',
+        },
+      },
+      required: ["query"],
+      additionalProperties: false,
+    },
+  },
+};
+
 /** A tool call reassembled from the stream's fragments. */
 interface StreamedToolCall {
   id: string;
   name: string;
   arguments: string;
+}
+
+/**
+ * The query out of a `search_images` call. Unparseable arguments are an empty
+ * query rather than a throw: `searchImages` answers that with a sentence the
+ * model can act on, which is worth more than losing the whole attempt to a
+ * malformed fragment.
+ */
+function readSearchQuery(rawArguments: string): string {
+  try {
+    const parsed = JSON.parse(rawArguments) as { query?: unknown };
+    return typeof parsed.query === "string" ? parsed.query : "";
+  } catch {
+    return "";
+  }
 }
 
 export interface DeepSeekRoundGeneratorOptions {
@@ -198,6 +255,12 @@ export function createDeepSeekRoundGenerator(
       },
     ];
 
+    // A lyrics round has nothing to look up; an image round is the reason the
+    // lookup exists.
+    const tools =
+      request.kind === "image" ? [SEARCH_IMAGES_TOOL, SUBMIT_ROUND_TOOL] : [SUBMIT_ROUND_TOOL];
+    let searchesLeft = MAX_SEARCHES;
+
     for (let turn = 0; turn < MAX_TURNS; turn += 1) {
       // Per turn, not per attempt: every turn is its own request with its own
       // think. `AbortSignal.timeout` unrefs its timer, so a finished turn
@@ -220,7 +283,7 @@ export function createDeepSeekRoundGenerator(
           {
             model: options.model,
             max_tokens: maxTokens,
-            tools: [SUBMIT_ROUND_TOOL],
+            tools,
             messages,
             stream: true,
             // The final chunk carries the usage block the log line is made of.
@@ -307,15 +370,28 @@ export function createDeepSeekRoundGenerator(
         ...(reasoningContent ? { reasoning_content: reasoningContent } : {}),
       });
 
-      // A tool call that is not `submit_round` still has to be answered — the
-      // protocol demands a result per call id — and the answer is the nudge.
+      // Every tool call has to be answered — the protocol demands a result per
+      // call id. A lookup gets real results; anything else gets the nudge,
+      // which is the only honest answer to a tool that does not exist.
       if (toolCalls.length > 0) {
         for (const call of toolCalls) {
-          messages.push({
-            role: "tool",
-            tool_call_id: call.id,
-            content: `There is no such tool. ${NUDGE_PROMPT}`,
-          });
+          let content: string;
+          if (call.name !== SEARCH_IMAGES_TOOL_NAME || request.kind !== "image") {
+            content = `There is no such tool. ${NUDGE_PROMPT}`;
+          } else if (searchesLeft <= 0) {
+            content = `No more lookups this round. ${NUDGE_PROMPT}`;
+          } else {
+            searchesLeft -= 1;
+            const query = readSearchQuery(call.arguments);
+            const results = await searchImages(query, signal);
+            if (results.ok) {
+              console.log(
+                `[content] ${request.topic} looked up "${query}": ${results.images.length} file(s)`,
+              );
+            }
+            content = formatImageResults(results, query);
+          }
+          messages.push({ role: "tool", tool_call_id: call.id, content });
         }
         continue;
       }
@@ -355,7 +431,7 @@ export function createDeepSeekRoundGenerator(
           console.warn(
             `[content] ${request.topic} attempt ${attempt}/${attempts} rejected: ${parsed.reason}`,
           );
-          retryNote = parsed.reason;
+          retryNote = `${parsed.reason} Submit a corrected round.`;
           playerMessage = "The AI could not come up with a usable round.";
           continue;
         }
@@ -369,7 +445,7 @@ export function createDeepSeekRoundGenerator(
           console.warn(
             `[content] ${request.topic} attempt ${attempt}/${attempts} duplicate: "${parsed.subject}" — "${duplicate.candidate}" is already banked as "${duplicate.banked}"`,
           );
-          retryNote = `"${parsed.subject}" is already in the bank — players call it "${duplicate.banked}", which is on the off-limits list.`;
+          retryNote = `"${parsed.subject}" is already in the bank — players call it "${duplicate.banked}", which is on the off-limits list. Pick a different subject.`;
           playerMessage = "The AI could not come up with a usable round.";
           continue;
         }
@@ -402,10 +478,24 @@ export function createDeepSeekRoundGenerator(
           `[content] ${request.topic} attempt ${attempt}/${attempts}: none of ${parsed.imageUrls.length} URLs for "${parsed.subject}" downloaded — ${parsed.imageUrls.join(" ")}`,
         );
         // Each attempt is a fresh conversation, so the model does not remember
-        // what it tried — the note has to say whose pictures failed. With no
-        // search to fall back on, the honest fix is a subject whose file name
-        // the model is actually sure of, so the note asks for that.
-        retryNote = `none of the image URLs you gave for "${parsed.subject}" could be downloaded — they were unreachable, or did not serve an actual image file. Most likely the file names do not exist. Use only canonical file names you are certain of, like "Flag of France.svg" behind the Special:FilePath redirect, or pick a different, more famously photographed subject.`;
+        // what it tried — the note has to say whose pictures failed. A dead
+        // candidate now means one of two things, and they want opposite
+        // answers: a file name written from memory instead of copied out of
+        // `search_images`, or a subject the archives genuinely have nothing
+        // for. So the same lookup is run here, and what it says decides which
+        // note goes back. Doing it on this side costs one API call and works
+        // even when the model skipped the tool, which is exactly the case the
+        // note exists for.
+        const rescue = await searchImages(parsed.subject, signal);
+        retryNote =
+          rescue.ok && rescue.images.length > 0
+            ? `none of the image URLs you gave for "${parsed.subject}" could be downloaded — those file names do not exist. These do:\n${rescue.images
+                .slice(0, 6)
+                .map((image) => `- ${image.name}\n  ${image.url}`)
+                .join(
+                  "\n",
+                )}\nSubmit URLs copied from a ${SEARCH_IMAGES_TOOL_NAME} result verbatim — never a file name you wrote yourself. If none of these show the subject plainly without spelling its name out, pick a different subject and look that one up first.`
+            : `none of the image URLs you gave for "${parsed.subject}" could be downloaded, and ${SEARCH_IMAGES_TOOL_NAME} finds nothing usable for it either — the open archives do not have this subject. Pick a different one, call ${SEARCH_IMAGES_TOOL_NAME} for it first, and submit only URLs copied from its results.`;
         playerMessage = "None of the pictures the AI picked would load.";
       }
 

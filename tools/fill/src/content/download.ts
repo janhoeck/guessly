@@ -10,8 +10,9 @@
  * stay up for a round is ours.
  */
 
-/** Wikimedia refuses anonymous user agents outright, and it is the best host we have. */
-const USER_AGENT =
+/** Wikimedia refuses anonymous user agents outright, and it is the best host we
+ *  have — for its API in wikimedia.ts as much as for the bytes here. */
+export const USER_AGENT =
   "Guessly/0.1 (multiplayer guessing game; +https://github.com/guessly) node-fetch";
 
 /** Big enough for any 1200px Commons render, small enough to refuse an archive scan. */

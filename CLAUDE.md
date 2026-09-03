@@ -167,16 +167,44 @@ reply safe to parse, none of them hope:
   the collision named to the model. The bank's own `insert` still refuses
   exact repeats, as the guard against two fill processes racing.
 
-Image rounds return up to five candidate URLs, best first; the first that
-downloads as an actual image wins. DeepSeek cannot search the web, so the
-prompt steers it toward URLs it can write *correctly* from memory — canonical,
-rule-based file names behind Wikimedia's `Special:FilePath` redirect — and
-toward subjects open archives actually photograph: for pop culture, the person
-or thing behind the phenomenon, never the meme or the screenshot, which no
-open host has and no round should hotlink anyway. A misremembered file name is
-caught by the download check and retried with the reason named. Lyrics rounds
-involve no URLs at all: a paraphrase is written from what the model already
-knows.
+**The model looks the picture up; it does not remember it.** DeepSeek cannot
+browse, and for a while that was taken to mean the file names had to come out
+of its memory — the prompt steered it toward canonical, rule-based names and
+the download check caught the rest. That works exactly as far as the rules go.
+`Flag of France.svg` is a rule. `Minecraft screenshot.png` is a wish, and the
+file the article actually uses is `Screenshot from the Minecraft Nether.png`,
+which nothing but a lookup was going to produce — so whole topics were
+unfillable, three attempts and five invented URLs each, ten minutes and a
+bench, every time they came up.
+
+`tools/fill/src/content/wikimedia.ts` is the lookup, offered to the model on
+image rounds as a second tool, `search_images`: MediaWiki's API, keyless, on
+the same host the bytes come from, answering with file names that exist and
+their sizes and captions. It asks two questions at once and interleaves the
+answers — what is on the subject's **English Wikipedia article**, which is
+guaranteed to be *about* the subject, and what **Commons** holds under that
+name, which is ranked by relevance and is the only source for a subject with
+no article. Alternating is what stops one of them spending the whole list;
+filling from the article first showed twelve incidental photographs and never
+the cosplay shot Commons had ranked first.
+
+**The lookup finds; the model chooses.** That split is the design. A tool that
+picked would have to know that a wordmark ruins a logo round, that a poster
+spells a film's title out, that box art is not a screenshot — judgements the
+prompt makes and an API cannot. What the tool does instead is make every
+candidate URL real, which is the half the model was bad at. It still steers
+toward subjects the open archives actually photograph: for pop culture the
+person or thing behind the phenomenon rather than the meme; for a game, the
+freely licensed gameplay screenshot when the search turns one up and the
+arcade cabinet, console or cosplayed character when it does not.
+
+Image rounds still return up to five candidate URLs, best first, and the first
+that downloads as an actual image wins — the download check has not moved, it
+just catches a bad *choice* now rather than a bad memory. A round whose
+candidates all fail is retried with the lookup run again on this side and the
+real file names quoted into the note, so the retry works even when the model
+skipped the tool. Lyrics rounds involve no URLs and no lookup: a paraphrase is
+written from what the model already knows.
 
 **Lyrics are never reproduced.** The prompt asks for a 3–5 line paraphrase — the
 same imagery, person and running order, none of the actual words — and the UI
@@ -788,7 +816,11 @@ answer to an abandoned round is refused rather than guarded against.
 fixture and a stub are interchangeable. The socket tests drive a stub; the
 fill service's `content/` is tested through `parseSubmission`, which is where
 "the model said something strange" has to come back as a rejection rather
-than a throw. The bank is tested from both of its ends, each in its own
+than a throw, and through `wikimedia.ts`'s own parsing — a real API payload
+read into candidates, which is where an article's sister-project logos, its
+audio file and its 20px interface icons have to stop being offered as
+pictures of the subject. Both are pure functions of a payload, so neither
+test touches the network. The bank is tested from both of its ends, each in its own
 package: `packages/bank`'s `postgres.test.ts` runs the real repository — the
 same Drizzle queries and migrations as production — against PGlite, Postgres
 compiled to WASM rather than an imitation of it, booted once per process and

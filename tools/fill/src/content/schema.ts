@@ -3,17 +3,18 @@ import { ALL_LANGUAGE_IDS, isLanguageId, type LanguageId, type RoundKind } from 
 /**
  * The output contract.
  *
- * Two layers, and both are load-bearing. The JSON Schema below is attached to a
- * `strict` tool, which is what makes the model's `input` structurally valid by
- * construction rather than by luck — there is no prose to scrape, no fenced
- * block to find, and no "sometimes it adds a preamble".
+ * Two layers, and both are load-bearing. The JSON Schema below is handed to
+ * the model as the tool's parameters, which is what makes the answer a tool
+ * call rather than prose — no prose to scrape, no fenced block to find, and
+ * no "sometimes it adds a preamble". DeepSeek treats the schema as guidance
+ * rather than a guarantee, so nothing downstream assumes the shape held.
  *
- * `parseSubmission` is the second layer, and it exists because structurally
- * valid is not the same as usable: a schema can promise a string and still be
- * handed an empty one, a lyrics snippet with the title in it, or a URL that is
- * a search results page. Everything below the schema is a game rule, and a
- * round that breaks one is rejected and asked for again rather than put in
- * front of twelve people.
+ * `parseSubmission` is the second layer, and it checks the shape along with
+ * everything a schema could never say: a schema can promise a string and
+ * still be handed an empty one, a lyrics snippet with the title in it, or a
+ * URL that is a search results page. Everything below the schema is a game
+ * rule, and a round that breaks one is rejected and asked for again rather
+ * than put in front of twelve people.
  *
  * One submission carries **every language the round was asked for**. The
  * subject, the picture and a lyrics round's paraphrase are shared — they are
@@ -30,10 +31,9 @@ import { ALL_LANGUAGE_IDS, isLanguageId, type LanguageId, type RoundKind } from 
 export const SUBMIT_ROUND_TOOL_NAME = "submit_round";
 
 /**
- * Every field is required, because `strict` requires it. The two kind-specific
- * fields are therefore always present and the *unused* one is empty — which is
- * simpler to satisfy, and simpler to check, than a schema that tries to be
- * conditional.
+ * Every field is required, so the two kind-specific fields are always asked
+ * for and the *unused* one is empty — which is simpler to satisfy, and simpler
+ * to check, than a schema that tries to be conditional.
  *
  * The language enum is built from the catalogue, so a new language is one entry
  * in `packages/protocol/src/languages.ts` and nothing here.
@@ -50,7 +50,7 @@ export const SUBMIT_ROUND_INPUT_SCHEMA = {
       type: "array",
       items: { type: "string" },
       description:
-        "Image rounds only. Three to five direct https URLs to an image file, best first, each one seen in a search result rather than written from memory, on hosts that serve files to anyone. Empty array on a lyrics round.",
+        "Image rounds only. Three to five direct https URLs to an image file, best first, each a canonical file name you are confident exists — ideally the Special:FilePath redirect form — on hosts that serve files to anyone. Empty array on a lyrics round.",
     },
     lyrics_snippet: {
       type: "string",

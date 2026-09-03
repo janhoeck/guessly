@@ -1,4 +1,4 @@
-import { APIConnectionError, APIConnectionTimeoutError, APIError } from "@anthropic-ai/sdk";
+import { APIConnectionError, APIConnectionTimeoutError, APIError } from "openai";
 
 /**
  * What went wrong with a request to the model, said twice: once for the people
@@ -14,7 +14,7 @@ import { APIConnectionError, APIConnectionTimeoutError, APIError } from "@anthro
  * trying again might work. A rejected key, a missing model and an empty balance
  * are one thing from where they are sitting — the server is broken and the host
  * cannot fix it by pressing start again — so they share a sentence, and the log
- * gets the four different reasons.
+ * gets the different reasons.
  */
 export interface SourceFailure {
   /** Goes to the lobby, in `round:failed`. */
@@ -33,22 +33,22 @@ const UNREACHABLE = "The content source could not be reached.";
 
 /** The API's own message for the failure, if the body carried one. */
 function bodyMessage(error: APIError): string | undefined {
-  const body = error.error as { error?: { message?: unknown } } | undefined;
-  const message = body?.error?.message;
+  const body = error.error as { message?: unknown } | undefined;
+  const message = body?.message;
   return typeof message === "string" ? message : undefined;
 }
 
 /**
- * An exhausted balance arrives as a plain `invalid_request_error` rather than
- * the `billing_error` the type union has room for, so both are checked and the
- * text is sniffed for the one that is not self-describing. If that wording ever
- * changes this falls through to the generic 4xx below — still honest, just less
- * useful — which is the right way for a guess about someone else's copy to fail.
+ * A model that does not exist comes back from DeepSeek as a 400 "Model Not
+ * Exist" rather than a 404, so the text is sniffed alongside the status the
+ * OpenAI wire format has room for. If that wording ever changes this falls
+ * through to the generic 4xx below — still honest, just less useful — which is
+ * the right way for a guess about someone else's copy to fail.
  */
-function isOutOfCredit(error: APIError): boolean {
-  if (error.type === "billing_error") return true;
+function isUnknownModel(error: APIError): boolean {
+  if (error.status === 404) return true;
   if (error.status !== 400) return false;
-  return /credit balance|purchase credits/i.test(bodyMessage(error) ?? error.message);
+  return /model not exist/i.test(bodyMessage(error) ?? error.message);
 }
 
 export function describeSourceFailure(error: unknown, model: string): SourceFailure {
@@ -56,11 +56,11 @@ export function describeSourceFailure(error: unknown, model: string): SourceFail
   if (error instanceof APIConnectionTimeoutError) {
     return {
       message: "The AI took too long to answer.",
-      detail: "api.anthropic.com did not answer within the request timeout",
+      detail: "api.deepseek.com did not answer within the request timeout",
     };
   }
   if (error instanceof APIConnectionError) {
-    return { message: UNREACHABLE, detail: "could not connect to api.anthropic.com" };
+    return { message: UNREACHABLE, detail: "could not connect to api.deepseek.com" };
   }
   // No status means the request never became a response — an aborted call, or
   // something thrown on the way out that is not the API's doing at all.
@@ -68,11 +68,20 @@ export function describeSourceFailure(error: unknown, model: string): SourceFail
     return { message: UNREACHABLE, detail: "the request failed before the API answered" };
   }
 
-  if (isOutOfCredit(error)) {
+  // DeepSeek says an empty balance with a status of its own rather than a
+  // message to sniff — the one part of this file the move made simpler.
+  if (error.status === 402) {
     return {
       message: MISCONFIGURED,
       detail:
-        "the account behind ANTHROPIC_API_KEY is out of credit — add credits at console.anthropic.com/settings/billing",
+        "the account behind DEEPSEEK_API_KEY is out of credit (402) — top up at platform.deepseek.com",
+    };
+  }
+
+  if (isUnknownModel(error)) {
+    return {
+      message: MISCONFIGURED,
+      detail: `DEEPSEEK_MODEL ${JSON.stringify(model)} does not exist`,
     };
   }
 
@@ -80,30 +89,20 @@ export function describeSourceFailure(error: unknown, model: string): SourceFail
     case 401:
       return {
         message: MISCONFIGURED,
-        detail: "ANTHROPIC_API_KEY was rejected (401) — check the key in tools/fill/.env (or apps/game/.env, its fallback)",
-      };
-    case 403:
-      return {
-        message: MISCONFIGURED,
-        detail: `ANTHROPIC_API_KEY may not use ${model} (403) — check the key's workspace`,
-      };
-    case 404:
-      return {
-        message: MISCONFIGURED,
-        detail: `ANTHROPIC_MODEL ${JSON.stringify(model)} does not exist (404)`,
+        detail: "DEEPSEEK_API_KEY was rejected (401) — check the key in tools/fill/.env (or apps/game/.env, its fallback)",
       };
     case 429:
-      return { message: BUSY, detail: "rate limited by api.anthropic.com (429)" };
+      return { message: BUSY, detail: "rate limited by api.deepseek.com (429)" };
   }
 
   if (error.status >= 500) {
-    return { message: STRUGGLING, detail: `api.anthropic.com returned ${error.status}` };
+    return { message: STRUGGLING, detail: `api.deepseek.com returned ${error.status}` };
   }
 
   // Every other 4xx is this server asking wrongly rather than the API failing,
   // so it reads as misconfiguration to the lobby and as a defect in the log.
   return {
     message: MISCONFIGURED,
-    detail: `api.anthropic.com rejected the request (${error.status}): ${bodyMessage(error) ?? error.message}`,
+    detail: `api.deepseek.com rejected the request (${error.status}): ${bodyMessage(error) ?? error.message}`,
   };
 }

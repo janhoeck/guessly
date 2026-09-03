@@ -1,7 +1,7 @@
 /**
  * A failure with a sentence in it that is fit to put on a player's screen. The
  * underlying error goes in `cause` for the log, where it belongs; "429 from
- * api.anthropic.com" is not a thing to tell five people waiting for a picture.
+ * api.deepseek.com" is not a thing to tell five people waiting for a picture.
  *
  * It lives in the bank package because the bank is where the producing and the
  * consuming side meet: the fill tool throws it when a round cannot be made,

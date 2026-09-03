@@ -74,7 +74,7 @@ export type GeneratedRound =
 
 /**
  * The production line's seam. `bank/` in `packages/` is what the *game*
- * consumes; this is what fills it — Claude today, anything that can deliver a
+ * consumes; this is what fills it — DeepSeek today, anything that can deliver a
  * verified round tomorrow. The filler in `../fill.ts` drives it and the tests
  * stub it.
  */

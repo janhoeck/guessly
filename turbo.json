@@ -24,6 +24,7 @@
       "passThroughEnv": [
         "PORT",
         "CORS_ORIGINS",
+        "DATABASE_URL",
         "DATA_DIR",
         "PUBLIC_BASE_URL",
         "NEXT_PUBLIC_SOCKET_URL"
@@ -36,6 +37,7 @@
       "passThroughEnv": [
         "PORT",
         "CORS_ORIGINS",
+        "DATABASE_URL",
         "DATA_DIR",
         "PUBLIC_BASE_URL",
         "NEXT_PUBLIC_SOCKET_URL"
@@ -45,7 +47,7 @@
       "dependsOn": ["^build"],
       "cache": false,
       "persistent": true,
-      "passThroughEnv": ["ANTHROPIC_API_KEY", "ANTHROPIC_MODEL", "DATA_DIR"]
+      "passThroughEnv": ["DEEPSEEK_API_KEY", "DEEPSEEK_MODEL", "DEEPSEEK_REASONING_EFFORT", "DATABASE_URL", "DATA_DIR"]
     },
     "lint": {
       "dependsOn": ["^build"]

@@ -13,9 +13,9 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.123.0",
     "@guessly/bank": "workspace:*",
-    "@guessly/protocol": "workspace:*"
+    "@guessly/protocol": "workspace:*",
+    "openai": "^7.9.0"
   },
   "devDependencies": {
     "@types/node": "^26",

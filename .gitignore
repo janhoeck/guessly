@@ -27,7 +27,7 @@ dist
 # turborepo
 .turbo
 
-# the game server's round bank (SQLite + downloaded images)
+# the game server's round bank images (rounds themselves live in Postgres)
 apps/game/data/
 
 # misc

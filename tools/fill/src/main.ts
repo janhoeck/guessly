@@ -1,8 +1,8 @@
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { createImageStore, createSqliteRoundRepository, RoundSourceError } from "@guessly/bank";
+import { createImageStore, createPostgresRoundRepository, RoundSourceError } from "@guessly/bank";
 import { loadEnvFile, loadFillConfig } from "./config.js";
-import { createClaudeRoundGenerator } from "./content/claude.js";
+import { createDeepSeekRoundGenerator } from "./content/deepseek.js";
 import { createBankFiller, type Shelf } from "./fill.js";
 
 /**
@@ -27,14 +27,15 @@ const SHELF_REPORT_EVERY = 10;
 loadEnvFile();
 const config = loadFillConfig();
 
-const repository = createSqliteRoundRepository(join(config.dataDir, "rounds.db"));
+const repository = createPostgresRoundRepository(config.databaseUrl);
 const images = createImageStore(join(config.dataDir, "images"));
 await repository.init();
 await images.init();
 
-const generator = createClaudeRoundGenerator({
-  apiKey: config.anthropicApiKey,
-  model: config.anthropicModel,
+const generator = createDeepSeekRoundGenerator({
+  apiKey: config.deepseekApiKey,
+  model: config.deepseekModel,
+  reasoningEffort: config.deepseekReasoningEffort,
 });
 const filler = createBankFiller({ repository, images, generator });
 
@@ -63,7 +64,9 @@ process.on("SIGINT", () => stop("SIGINT"));
 process.on("SIGTERM", () => stop("SIGTERM"));
 
 printShelves(await filler.shelves());
-console.log(`[fill] filling with ${config.anthropicModel} into ${config.dataDir} — Ctrl+C to stop`);
+console.log(
+  `[fill] filling with ${config.deepseekModel} (${config.deepseekReasoningEffort} reasoning effort), images into ${config.dataDir} — Ctrl+C to stop`,
+);
 
 let banked = 0;
 while (!controller.signal.aborted) {

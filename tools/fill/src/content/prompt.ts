@@ -10,15 +10,15 @@ import {
  * The prompt.
  *
  * It is split the way the request is billed and cached: everything that is true
- * of every round lives in `SYSTEM_PROMPT` and is marked cacheable, and the two
- * or three lines that change per round are the user message. Tools render
- * before the system prompt, so image rounds and lyrics rounds each keep their
- * own stable prefix rather than invalidating one another's.
+ * of every round lives in `SYSTEM_PROMPT`, which DeepSeek's automatic prefix
+ * caching serves cheaply on a warm loop, and the two or three lines that
+ * change per round are the user message, which renders after it.
  *
  * The output contract is not written here at all — it is the `submit_round`
- * tool schema in ./schema.ts, declared `strict`, which is what makes the
- * response parseable rather than merely usually-parseable. This file's job is
- * to make the *content* good; the schema's job is to make it safe to read.
+ * tool schema in ./schema.ts and the parser that reads it back, which together
+ * are what make the response parseable rather than merely usually-parseable.
+ * This file's job is to make the *content* good; the schema's job is to make
+ * it safe to read.
  *
  * The prompt is deliberately terse: rules and the examples that carry them,
  * none of the surrounding argument. Every sentence is paid for on each cache
@@ -87,45 +87,54 @@ appear in it.
 
 # Image rounds
 
-**Search before you submit — every round, no exceptions.** File names written
-from memory do not exist: the real file is "Camp Nou - Interior (2005).jpg",
-not "Camp Nou stadium.jpg". Search \`<subject> site:commons.wikimedia.org\` and
-copy the \`File:\` name out of a result exactly — spelling, brackets, year and
-all. One search like that is usually the whole job; two empty searches mean the
-subject is wrong, not that a third will find it. The one rule-based family is
-national flags: \`Flag of <Country>.svg\` on Commons, no search needed.
+**You cannot search the web — every URL is written from what you already
+know.** A plausible-sounding file name is not a real one: the real file is
+"Camp Nou - Interior (2005).jpg", not "Camp Nou stadium.jpg". Certainty comes
+from canonical, rule-based names — national flags are
+\`Flag of <Country>.svg\` on Commons — and from files so famous their exact
+name is common knowledge. Favour those subjects, and assume some of your names
+are still wrong: that is what the candidate list is for.
 
 Two kinds of host work, and almost nothing else does:
 
-- **Wikimedia Commons** — the first place to look for real people, places and
+- **Wikimedia Commons** — where the open archives keep real people, places and
   things.
-- **The subject's English Wikipedia article**, via the same redirect:
+- **The subject's English Wikipedia article's images**, via the same redirect:
   https://en.wikipedia.org/wiki/Special:FilePath/<File name>
 
-**A film, a game or a show was never photographed** — its article holds a
-poster or a wordmark, which spells the title out. Make the physical residue the
-subject instead (the DeLorean, the costume, the actor at a premiere) and let
-the work be the answer. Memes and TV moments likewise: the meme image is a
-copyrighted photo on a blocking host, so ask about the real animal, person or
-place in it — Grumpy Cat, the Shiba Inu behind Doge. If no search surfaces a
-picture on either host, change subjects rather than submitting hopeful URLs.
+**A film or a show was never photographed** — its article holds a poster or a
+wordmark, which spells the title out. Make the physical residue the subject
+instead (the DeLorean, the costume, the actor at a premiere) and let the work
+be the answer. Memes and TV moments likewise: the meme image is a copyrighted
+photo on a blocking host, so ask about the real animal, person or place in it —
+Grumpy Cat, the Shiba Inu behind Doge. **A video game, though, is shown as
+itself**: an in-game screenshot — the gameplay screenshot on the game's English
+Wikipedia article is a real, nameable file — never box art, key art or a title
+screen, which all spell the name out. If you cannot name a real file on either
+host, change subjects rather than submitting hopeful URLs.
 
 Return three to five URLs in \`image_urls\`, best first. The server tries them
-in order and takes the first that downloads, so give genuinely different
-pictures, ideally on different hosts — five sizes of one file is one candidate.
-Lead with the Commons redirect:
+in order and takes the first that downloads, so make them genuinely different
+tries — different file names and different pictures, not five sizes of one
+guess. Lead with the Commons redirect, which resolves a file name wherever the
+file lives:
 
     https://commons.wikimedia.org/wiki/Special:FilePath/<File name>?width=1200
 
-Prefer it over a hand-written upload.wikimedia.org hash path, the commonest
-dead URL. Every URL must use \`https\`, point straight at an image file
+Never hand-write an upload.wikimedia.org hash path — it is the commonest dead
+URL. Every URL must use \`https\`, point straight at an image file
 (\`.jpg\`, \`.jpeg\`, \`.png\`, \`.webp\`, \`.svg\`, or the redirect form) —
 never a page, a search listing or a viewer — and sit on a host that serves
 images to other sites: museums, archives, government sites and NASA are good;
 Instagram, Facebook, X, Pinterest, Getty, Shutterstock, Alamy and news-site
-CDNs block hotlinking and waste the round. The picture must show the subject
-large and plain, and must not contain the answer in writing — no titled
-posters, no wordmarks, no labelled flags.
+CDNs block hotlinking and waste the round. Licence is not a filter: the file
+is downloaded once and served from our own host, so a restrictively licensed
+image — commercial-use-only included — is as usable as a free one; only a URL
+that will not download is wasted. The picture must show the subject large and
+plain, and must not contain the answer in writing — no titled posters, no
+wordmarks, no labelled flags. A logo round shows the symbol alone — the
+swoosh, the bitten apple — never a wordmark or a mark with the brand's name in
+or beside it; a brand whose only mark is its name is a different subject.
 
 # Lyrics rounds
 

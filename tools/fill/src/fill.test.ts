@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createSqliteRoundRepository, type ImageStore, type NewBankedRound, type StorableImage } from "@guessly/bank";
+import { createInMemoryRoundRepository, type ImageStore, type NewBankedRound, type StorableImage } from "@guessly/bank";
 import {
   RoundSourceError,
   type GeneratedRound,
@@ -92,7 +92,7 @@ async function harness(options: {
   topics?: readonly ("flags" | "music")[];
   seed?: NewBankedRound[];
 }) {
-  const repository = createSqliteRoundRepository(":memory:");
+  const repository = createInMemoryRoundRepository();
   await repository.init();
   for (const round of options.seed ?? []) await repository.insert(round, NOON, false);
   const images = fakeImages();

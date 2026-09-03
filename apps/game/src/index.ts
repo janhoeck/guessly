@@ -3,7 +3,7 @@ import { createServer, type ServerResponse } from "node:http";
 import { join } from "node:path";
 import { Server } from "socket.io";
 import { SWEEP_INTERVAL_MS } from "@guessly/protocol";
-import { createImageStore, createSqliteRoundRepository } from "@guessly/bank";
+import { createImageStore, createPostgresRoundRepository } from "@guessly/bank";
 import { createBankedRoundSource } from "./bank/source.js";
 import { loadConfig, loadEnvFile } from "./config.js";
 import { createLobbyStore } from "./lobby/store.js";
@@ -15,9 +15,9 @@ import { registerSocketHandlers, type GameServer } from "./socket/register.js";
 loadEnvFile();
 const config = loadConfig();
 
-// The bank: rounds in SQLite, pictures on disk, both under one directory that
-// is expected to outlive the process — that persistence is the whole point.
-const repository = createSqliteRoundRepository(join(config.dataDir, "rounds.db"));
+// The bank: rounds in Postgres, pictures on disk under DATA_DIR — both
+// expected to outlive the process; that persistence is the whole point.
+const repository = createPostgresRoundRepository(config.databaseUrl);
 const images = createImageStore(join(config.dataDir, "images"));
 await repository.init();
 await images.init();
@@ -105,7 +105,7 @@ const sweepTimer = setInterval(() => {
 httpServer.listen(config.port, () => {
   console.log(`[game] listening on :${config.port}`);
   console.log(`[game] allowed origins: ${config.allowedOrigins.join(", ")}`);
-  console.log(`[game] round bank at ${config.dataDir}, images served from ${config.publicBaseUrl}/img/`);
+  console.log(`[game] round bank in Postgres, images at ${config.dataDir} served from ${config.publicBaseUrl}/img/`);
 });
 
 const shutdown = (signal: string) => {

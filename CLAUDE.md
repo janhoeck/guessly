@@ -78,10 +78,10 @@ appears is a round half the room missed the start of.
 
 Content is **produced and consumed by different processes**, and that split is
 the architecture — visible in the workspace layout. `packages/bank` is the
-seam both processes share: a persistent pool of verified rounds — SQLite plus
-a directory of content-addressed images — behind `RoundRepository` and
-`ImageStore`. `apps/game/src/bank/source.ts` is the consuming side, answering
-a build in ~0ms. `tools/fill` is the producing side: Claude, asked for a
+seam both processes share: a persistent pool of verified rounds — Postgres
+(through Drizzle) plus a directory of content-addressed images — behind
+`RoundRepository` and `ImageStore`. `apps/game/src/bank/source.ts` is the consuming side, answering
+a build in ~0ms. `tools/fill` is the producing side: DeepSeek, asked for a
 round, by a service the operator runs and watches. The server only ever talks
 to the bank (`bank/source.ts` implements `RoundContentSource`) and **never
 calls the AI** — it does not even depend on the SDK:
@@ -112,7 +112,7 @@ calls the AI** — it does not even depend on the SDK:
 **A round is one subject and every language at once.** The generator is asked
 for all of them in a single call and the bank stores what the round *shows* —
 the picture, or the paraphrase — on one `rounds` row, with one `round_texts`
-row per language for what it asks and accepts, so the search, the picture and the cached prompt
+row per language for what it asks and accepts, so the picture and the cached prompt
 prefix are paid for once and the second language costs a few hundred output
 tokens. What that buys the players is a German lobby being dealt, in ~0ms, the
 round an English lobby paid for last night. It also decides the gauge: the
@@ -120,15 +120,19 @@ fill tool measures a topic's shelf by the language it holds the *fewest*
 rounds in, because a topic full of rounds none of which were written in German
 is an empty shelf to a German lobby.
 
-`sqlite.ts` carries one migration, and it exists to protect a bank that already
-has pictures in it. A round used to carry its question, answer and aliases
-inline, back when there was one language to say them in; the old table is
-renamed, copied into `rounds` and `round_texts` — everything in it English, and
-its paraphrase staying on the round, where it always belonged — and dropped,
-inside a transaction, because a bank half moved is worse than a bank in either
-shape. Those rounds go on being dealt to English lobbies and are
-passed over for German ones, which is what an empty German shelf looks like
-until a fill run stocks it.
+The schema lives in `packages/bank/src/schema.ts` — the one file both the
+queries and `drizzle-kit generate` read, so the SQL migrations under
+`packages/bank/drizzle/` can never drift from what the queries mean. `init()`
+applies whatever is pending on every start; a schema change is an edit to
+`schema.ts`, a `pnpm db:generate` in `packages/bank`, and both committed. The
+bank lived in SQLite once, and `pnpm db:import [rounds.db]` (in
+`packages/bank`, after a build) is what moved it:
+a one-time copy into Postgres, ids and serve counts included, because the
+rotation's memory of what has been dealt is part of the bank — and a refusal
+if Postgres already holds rounds, rather than a guess at a merge. Rounds from
+before a language existed are simply rounds without that language's text —
+dealt to English lobbies and passed over for German ones, which is what an
+empty German shelf looks like until a fill run stocks it.
 
 **Images are self-hosted.** The generator downloads the picture — whole file,
 capped, format verified by magic bytes rather than by anybody's content-type
@@ -137,17 +141,18 @@ it from this server's own origin at `/img/<hash>.<ext>`. Players never load
 from a third-party host, so hotlink blocks, CORS and link rot cannot kill a
 round at render time. The source URL is kept in the bank for attribution.
 
-`tools/fill/src/content/claude.ts` produces rounds, and three things make the
+`tools/fill/src/content/deepseek.ts` produces rounds, and three things make the
 reply safe to parse, none of them hope:
 
-- **It is a `strict` tool call, not prose.** `submit_round` carries a JSON Schema
-  with `additionalProperties: false`, so the input validates by construction.
-  There is no fenced block to find and no preamble to strip. The subject, the
-  kind and the candidate URLs sit at the top level and `versions` carries one
-  entry per language, its `language` enum built from the catalogue — so a new
-  language is an entry in `languages.ts` and nothing in the schema.
-- **It is read back through `parseSubmission`.** The schema promises shape; the
-  parser enforces the *rules* a schema cannot express — an answer short enough
+- **It is a tool call, not prose.** `submit_round` carries a JSON Schema with
+  `additionalProperties: false`, so there is no fenced block to find and no
+  preamble to strip. The subject, the kind and the candidate URLs sit at the
+  top level and `versions` carries one entry per language, its `language` enum
+  built from the catalogue — so a new language is an entry in `languages.ts`
+  and nothing in the schema.
+- **It is read back through `parseSubmission`.** DeepSeek treats the schema as
+  guidance rather than a guarantee, so the parser checks the shape along with
+  the *rules* a schema could never express — an answer short enough
   to type, a question that does not name the answer, a lyrics snippet that does
   not give the song away, a URL that could be an image — and the rule the whole
   shape exists for: every language asked for came back. A round missing one is
@@ -167,14 +172,16 @@ reply safe to parse, none of them hope:
   the collision named to the model. The bank's own `insert` still refuses
   exact repeats, as the guard against two fill processes racing.
 
-Image rounds get the `web_search` server tool and return up to five candidate
-URLs, best first; the first that downloads as an actual image wins. The prompt
-steers subjects toward what open archives actually photograph — for pop
-culture, the person or thing behind the phenomenon, never the meme or the
-screenshot, which no open host has and no round should hotlink anyway. Lyrics
-rounds get no search: a paraphrase is written from what the model already
-knows, and the two tool lists are stable so each keeps its own cached prompt
-prefix.
+Image rounds return up to five candidate URLs, best first; the first that
+downloads as an actual image wins. DeepSeek cannot search the web, so the
+prompt steers it toward URLs it can write *correctly* from memory — canonical,
+rule-based file names behind Wikimedia's `Special:FilePath` redirect — and
+toward subjects open archives actually photograph: for pop culture, the person
+or thing behind the phenomenon, never the meme or the screenshot, which no
+open host has and no round should hotlink anyway. A misremembered file name is
+caught by the download check and retried with the reason named. Lyrics rounds
+involve no URLs at all: a paraphrase is written from what the model already
+knows.
 
 **Lyrics are never reproduced.** The prompt asks for a 3–5 line paraphrase — the
 same imagery, person and running order, none of the actual words — and the UI
@@ -183,7 +190,7 @@ Real lyrics are copyrighted and this game does not quote them. Writing the
 paraphrase in the song's own language makes that *harder*, because the real
 words are the nearest phrasing to hand, so the prompt says so out loud.
 
-`ANTHROPIC_API_KEY` belongs to the fill tool, which refuses to start without
+`DEEPSEEK_API_KEY` belongs to the fill tool, which refuses to start without
 it. The server neither needs nor checks it: a server with an empty bank fails
 a round honestly, and the fix is a fill run, not a restart.
 
@@ -383,12 +390,13 @@ driven by Turborepo:
 ```
 apps/web/           # Next.js app. Renders UI. Holds no game state.
 apps/game/          # Node + Socket.IO server. Owns all lobby state, in memory.
-                    # Reads the round bank; its data/ holds rounds.db + images/.
+                    # Reads the round bank; its data/ holds the bank's images/.
 tools/fill/         # The fill service: the only process that calls the AI.
                     # Writes the round bank the game server reads.
 packages/protocol/  # Shared TypeScript types for every socket event.
-packages/bank/      # The round bank: repository, SQLite, image store — the
-                    # seam apps/game and tools/fill share instead of each other.
+packages/bank/      # The round bank: repository, Drizzle schema, Postgres,
+                    # image store — the seam apps/game and tools/fill share
+                    # instead of each other.
 ```
 
 `packages/protocol` and `packages/bank` compile to `dist`; turbo builds them
@@ -412,9 +420,10 @@ Socket.IO, pnpm, Turborepo.
 
 **Deployment:** a long-running Node host (Railway, Fly.io, Render, VPS) — *not*
 Vercel serverless, which cannot hold sockets or in-memory state. The round bank
-(`DATA_DIR`) must sit on a disk that survives restarts, or every deploy starts
-with a cold pool; `PUBLIC_BASE_URL` must be the origin players reach the game
-server on, because banked image URLs are built from it.
+needs a Postgres (`DATABASE_URL`) and, for its images, a disk that survives
+restarts (`DATA_DIR`) — or every deploy starts with a cold pool;
+`PUBLIC_BASE_URL` must be the origin players reach the game server on, because
+banked image URLs are built from it.
 
 **Dev:** `pnpm dev` at the root runs both — web on :3000, game server on :3001.
 The client connects via `NEXT_PUBLIC_SOCKET_URL`. Socket.IO gets an explicit
@@ -431,23 +440,25 @@ variables properly and ships no `.env` at all.
 
 Turbo runs tasks in **strict env mode**, which means a variable the shell
 exports does not reach a task unless `turbo.json` names it. `PORT`,
-`CORS_ORIGINS`, `DATA_DIR` and `PUBLIC_BASE_URL` are listed under
-`passThroughEnv` on `dev` and `start`, and `ANTHROPIC_API_KEY`,
-`ANTHROPIC_MODEL` and `DATA_DIR` on `fill` — passed through rather than
-hashed, because they are runtime configuration and one of them is a secret. A
-new runtime variable has to be added there or it will silently go missing.
+`CORS_ORIGINS`, `DATABASE_URL`, `DATA_DIR` and `PUBLIC_BASE_URL` are listed
+under `passThroughEnv` on `dev` and `start`, and `DEEPSEEK_API_KEY`,
+`DEEPSEEK_MODEL`, `DEEPSEEK_REASONING_EFFORT`, `DATABASE_URL` and `DATA_DIR`
+on `fill` — passed through
+rather than hashed, because they are runtime configuration and some of them
+are secrets. A new runtime variable has to be added there or it will silently
+go missing.
 
 **Lobbies are memory; content is an asset.** Lobby state lives in the game
 server's process and dies with it — deliberately, see Lobbies. The round bank
-persists: SQLite (via Node's own `node:sqlite`, no native dependency) behind
-the `RoundRepository` interface in `packages/bank`, whose methods are async
-*because* the next implementation is Postgres — swapping it in is one new file,
-not a change to any caller. Nothing outside `packages/bank` knows which one is
-plugged in. Two tables: `rounds` is what was photographed and how often it has
-been dealt, `round_texts` is what each language asks and accepts about it.
-Because the server deals from the same SQLite file the fill service writes,
-the repository sets a busy timeout and takes write locks up front (`BEGIN
-IMMEDIATE`) — two polite writers instead of one surprised one.
+persists: Postgres, through Drizzle, behind the `RoundRepository` interface
+in `packages/bank` — an interface written async for exactly this
+implementation before it existed, which is why swapping SQLite out was one
+new file rather than a change to any caller. Nothing outside `packages/bank`
+knows what is plugged in. Two tables: `rounds` is what was photographed and
+how often it has been dealt, `round_texts` is what each language asks and
+accepts about it. The server and the fill service are two processes on the
+one database, so `insert` checks and writes under a transaction-scoped
+advisory lock on the topic — two polite writers instead of one surprised one.
 
 ## Web UI
 
@@ -730,8 +741,11 @@ fixture and a stub are interchangeable. The socket tests drive a stub; the
 fill service's `content/` is tested through `parseSubmission`, which is where
 "the model said something strange" has to come back as a rejection rather
 than a throw. The bank is tested from both of its ends, each in its own
-package: `packages/bank`'s `sqlite.test.ts` runs the real repository against
-`:memory:`; the game's `bank/source.test.ts` drives the consuming side —
+package: `packages/bank`'s `postgres.test.ts` runs the real repository — the
+same Drizzle queries and migrations as production — against PGlite, Postgres
+compiled to WASM rather than an imitation of it, booted once per process and
+wiped clean for every test; the game's `bank/source.test.ts` drives the
+consuming side —
 draws, cross-language aliases, and the misses that fail a round — against it;
 and `tools/fill`'s `fill.test.ts` drives the producing side — thinnest shelf
 first, exclusion lists, benching and backoff — with a stub generator and a

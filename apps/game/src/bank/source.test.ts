@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { RoundSourceError } from "../content/source.js";
 import { matchesAnswer } from "../lobby/matching.js";
 import type { RoundRequest } from "../lobby/store.js";
-import { createSqliteRoundRepository, type NewBankedRound, type RoundRepository } from "@guessly/bank";
+import { createInMemoryRoundRepository, type NewBankedRound, type RoundRepository } from "@guessly/bank";
 import { createBankedRoundSource } from "./source.js";
 
 const NOON = 1_700_000_000_000;
@@ -55,7 +55,7 @@ function bankedLyrics(answer: string): NewBankedRound {
 }
 
 async function harness(...rounds: NewBankedRound[]) {
-  const repository = createSqliteRoundRepository(":memory:");
+  const repository = createInMemoryRoundRepository();
   await repository.init();
   for (const round of rounds) await repository.insert(round, NOON, false);
   const source = createBankedRoundSource({

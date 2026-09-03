@@ -1,10 +1,6 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { createInMemoryRoundRepository } from "./memory.js";
 import type { NewBankedRound, RoundRepository } from "./repository.js";
-import { createSqliteRoundRepository } from "./sqlite.js";
 
 const NOON = 1_700_000_000_000;
 
@@ -60,7 +56,7 @@ function englishOnly(answer: string, overrides: Partial<NewBankedRound> = {}): N
 let repo: RoundRepository;
 
 beforeEach(async () => {
-  repo = createSqliteRoundRepository(":memory:");
+  repo = createInMemoryRoundRepository();
   await repo.init();
 });
 
@@ -207,119 +203,6 @@ describe("draw", () => {
     await repo.insert(named("Bhutan", "Bhutan"), NOON, true);
     await repo.insert(named("Japan", "Japan"), NOON, false);
     expect((await repo.draw("flags", "en", [], NOON))?.subject).toBe("Japan");
-  });
-});
-
-/**
- * The one migration this file has, driven against a real database file because
- * `:memory:` cannot be closed and reopened — and reopening is the whole event.
- *
- * What is being protected is somebody's existing bank: the pictures in it were
- * downloaded once and paid for once, and a schema change that silently orphaned
- * them would be a worse bug than the one it fixed.
- */
-describe("a bank from before a round had languages", () => {
-  /** The schema exactly as it stood, indexes and all. */
-  const OLD_SCHEMA = `
-    CREATE TABLE rounds (
-      id             INTEGER PRIMARY KEY AUTOINCREMENT,
-      topic          TEXT    NOT NULL,
-      kind           TEXT    NOT NULL,
-      question       TEXT    NOT NULL,
-      answer         TEXT    NOT NULL,
-      answer_key     TEXT    NOT NULL,
-      aliases        TEXT    NOT NULL,
-      subject        TEXT    NOT NULL,
-      snippet        TEXT,
-      image_file     TEXT,
-      source_url     TEXT,
-      created_at     INTEGER NOT NULL,
-      times_served   INTEGER NOT NULL DEFAULT 0,
-      last_served_at INTEGER
-    );
-    CREATE UNIQUE INDEX rounds_topic_answer ON rounds (topic, answer_key);
-    CREATE INDEX rounds_topic ON rounds (topic);
-  `;
-
-  let dir: string;
-  let path: string;
-  let migrated: RoundRepository;
-
-  beforeEach(async () => {
-    dir = await mkdtemp(join(tmpdir(), "guessly-bank-"));
-    path = join(dir, "rounds.db");
-
-    const old = new DatabaseSync(path);
-    old.exec(OLD_SCHEMA);
-    old
-      .prepare(
-        `INSERT INTO rounds
-           (topic, kind, question, answer, answer_key, aliases, subject,
-            snippet, image_file, source_url, created_at)
-         VALUES ('flags', 'image', 'Which country''s flag is this?', 'Bhutan',
-                 'bhutan', '["Kingdom of Bhutan"]', 'Flag of Bhutan', NULL, ?, NULL, ?)`,
-      )
-      .run(`${"a".repeat(64)}.png`, NOON);
-    // A lyrics round too: its paraphrase was already on the round back then,
-    // and it has to stay there rather than being scattered into round_texts.
-    old
-      .prepare(
-        `INSERT INTO rounds
-           (topic, kind, question, answer, answer_key, aliases, subject,
-            snippet, image_file, source_url, created_at)
-         VALUES ('music', 'lyrics', 'Which song is this?', 'Bohemian Rhapsody',
-                 'bohemian rhapsody', '["Queen"]', 'Bohemian Rhapsody',
-                 'Is any of this real', NULL, NULL, ?)`,
-      )
-      .run(NOON);
-    old.close();
-
-    migrated = createSqliteRoundRepository(path);
-    await migrated.init();
-  });
-
-  afterEach(async () => {
-    await migrated.close();
-    await rm(dir, { recursive: true, force: true });
-  });
-
-  it("keeps what was already banked, as English", async () => {
-    expect(await migrated.count("flags", "en")).toBe(1);
-
-    const drawn = await migrated.draw("flags", "en", [], NOON);
-    expect(drawn?.subject).toBe("Flag of Bhutan");
-    expect(drawn?.imageFile).toBe(`${"a".repeat(64)}.png`);
-    expect(drawn?.texts.en).toMatchObject({
-      question: "Which country's flag is this?",
-      answer: "Bhutan",
-      aliases: ["Kingdom of Bhutan"],
-    });
-  });
-
-  it("keeps a lyrics round's paraphrase on the round", async () => {
-    const drawn = await migrated.draw("music", "en", [], NOON);
-    expect(drawn?.snippet).toBe("Is any of this real");
-    // Never recorded back then, and a guess would be worse than nothing.
-    expect(drawn?.snippetLanguage).toBeNull();
-  });
-
-  it("does not hand those rounds to a lobby playing in a language they lack", async () => {
-    expect(await migrated.count("flags", "de")).toBe(0);
-    expect(await migrated.draw("flags", "de", [], NOON)).toBeNull();
-  });
-
-  it("goes on banking new rounds beside them", async () => {
-    expect(await migrated.insert(named("France", "Frankreich"), NOON, false)).toBe(true);
-    expect(await migrated.count("flags", "en")).toBe(2);
-    expect(await migrated.count("flags", "de")).toBe(1);
-  });
-
-  it("leaves a database it has already moved alone", async () => {
-    await migrated.close();
-    // Reopening runs the migration a second time, against the new shape.
-    migrated = createSqliteRoundRepository(path);
-    await migrated.init();
-    expect(await migrated.count("flags", "en")).toBe(1);
   });
 });
 

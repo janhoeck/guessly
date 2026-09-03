@@ -36,15 +36,20 @@ export function loadEnvFile(): void {
 export interface Config {
   port: number;
   /**
+   * The Postgres the round bank lives in — the same database the fill tool
+   * writes. Required: a server without a bank cannot deal a single round,
+   * and failing to start says so louder than failing every game.
+   */
+  databaseUrl: string;
+  /**
    * An explicit allowlist, never "*" — the socket is the only way into lobby
    * state, and that state is held in this process's memory.
    */
   allowedOrigins: string[];
   /**
-   * Where the round bank lives: the SQLite file and the image files. Lobby
-   * state stays in memory and dies with the process; the bank is the part
-   * that is supposed to survive it, so a deploy must put this on a disk that
-   * outlives the container.
+   * Where the bank's image files live. The rounds themselves are in Postgres
+   * now, but what they show is still content-addressed files on disk, so a
+   * deploy must put this on a disk that outlives the container.
    */
   dataDir: string;
   /**
@@ -68,6 +73,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const port = Number(env.PORT ?? 3001);
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new Error(`PORT must be a port number, got ${JSON.stringify(env.PORT)}`);
+  }
+
+  const databaseUrl = (env.DATABASE_URL ?? "").trim();
+  if (!databaseUrl) {
+    throw new Error(
+      "DATABASE_URL is required — the Postgres the round bank lives in. Copy apps/game/.env.example to apps/game/.env and set it.",
+    );
   }
 
   const allowedOrigins = (env.CORS_ORIGINS ?? "http://localhost:3000")
@@ -97,5 +109,5 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     );
   }
 
-  return { port, allowedOrigins, dataDir, publicBaseUrl };
+  return { port, databaseUrl, allowedOrigins, dataDir, publicBaseUrl };
 }

@@ -35,7 +35,7 @@ export const TOPICS = [
   { id: "flags", label: "Flags", kind: "image", hint: "Countries and territories" },
   { id: "logos", label: "Logos & brands", kind: "image", hint: "Marks with the name cropped out" },
   { id: "movies", label: "Movies", kind: "image", hint: "Props, places and faces from the films" },
-  { id: "games", label: "Video games", kind: "image", hint: "Characters, statues and cosplay" },
+  { id: "games", label: "Video games", kind: "image", hint: "In-game screenshots" },
   { id: "landmarks", label: "Landmarks", kind: "image", hint: "Buildings, cities, natural wonders" },
   { id: "animals", label: "Animals", kind: "image", hint: "Species, common and obscure" },
   { id: "food", label: "Food & drink", kind: "image", hint: "Dishes from everywhere" },

@@ -1,5 +1,5 @@
 import { isLanguageId, isTopicId, type LanguageId } from "@guessly/protocol";
-import type { RoundFilter } from "@guessly/bank";
+import type { RoundFilter, RoundOrder } from "@guessly/bank";
 
 /**
  * The round list's address: what `/rounds?…` means, and how to write it.
@@ -11,12 +11,22 @@ import type { RoundFilter } from "@guessly/bank";
  * Reading and writing it are in one file so they cannot disagree about a
  * parameter's name. A value that is not a real id is read as no filter,
  * which is what lets the form send a word for "any".
+ *
+ * `order` rides in the same address and is the one parameter that narrows
+ * nothing: it is the same list read from a different end, and an address
+ * without it is the plain list, newest first.
  */
 
 export const ROUNDS_PER_PAGE = 24;
 
+/** Every way the list can be read, in the order the filter offers them. */
+export const ROUND_ORDERS = ["newest", "liked", "disliked"] as const satisfies readonly RoundOrder[];
+
+export const DEFAULT_ORDER: RoundOrder = "newest";
+
 export interface RoundQuery {
   filter: RoundFilter;
+  order: RoundOrder;
   /** 1-based. */
   page: number;
 }
@@ -31,6 +41,9 @@ type Params = Record<string, string | string[] | undefined>;
 
 const first = (value: string | string[] | undefined): string =>
   (Array.isArray(value) ? value[0] : value) ?? "";
+
+const isRoundOrder = (value: string): value is RoundOrder =>
+  (ROUND_ORDERS as readonly string[]).includes(value);
 
 /** The URL's answer to the language question, or null for "any". */
 export function languageChoice(filter: RoundFilter): LanguageChoice | null {
@@ -57,8 +70,13 @@ export function parseRoundQuery(params: Params): RoundQuery {
   const search = first(params.q).trim();
   if (search !== "") filter.search = search;
 
+  const order = first(params.order);
   const page = Number(first(params.page));
-  return { filter, page: Number.isInteger(page) && page >= 1 ? page : 1 };
+  return {
+    filter,
+    order: isRoundOrder(order) ? order : DEFAULT_ORDER,
+    page: Number.isInteger(page) && page >= 1 ? page : 1,
+  };
 }
 
 /** `/rounds?…` for this query — the same address `parseRoundQuery` reads. */
@@ -69,10 +87,18 @@ export function roundsHref(query: RoundQuery): string {
   const language = languageChoice(query.filter);
   if (language !== null) params.set("language", language);
   if (query.filter.search !== undefined) params.set("q", query.filter.search);
+  if (query.order !== DEFAULT_ORDER) params.set("order", query.order);
   if (query.page > 1) params.set("page", String(query.page));
   const encoded = params.toString();
   return encoded === "" ? "/rounds" : `/rounds?${encoded}`;
 }
 
-/** Is anything narrowed at all? Decides whether a "Clear" link is worth showing. */
+/**
+ * Does the filter leave anything out? The list reads this to tell an empty
+ * page from an empty bank; an order is not a filter and is not counted.
+ */
 export const isFiltered = (filter: RoundFilter): boolean => Object.keys(filter).length > 0;
+
+/** Is the address anything but the plain list? Decides whether "Clear" is worth showing. */
+export const isNarrowed = (query: RoundQuery): boolean =>
+  isFiltered(query.filter) || query.order !== DEFAULT_ORDER;

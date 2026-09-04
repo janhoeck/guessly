@@ -8,6 +8,7 @@ import { isTopicId, topicById } from "@guessly/protocol";
 import { DeleteRound } from "@/components/rounds/delete-round";
 import { ReplaceImage } from "@/components/rounds/replace-image";
 import { RoundEditor } from "@/components/rounds/round-editor";
+import { describeVotes } from "@/components/rounds/vote-tally";
 import { Badge } from "@guessly/ui/components/ui/badge";
 import { getBank } from "@/lib/bank";
 import { deleteRound, replaceImage, updateRound } from "./actions";
@@ -70,7 +71,7 @@ export default async function RoundPage({ params }: Params) {
           <Badge variant="secondary">{round.kind === "lyrics" ? "Lyrics" : "Picture"}</Badge>
         </div>
         <p className="text-sm text-muted-foreground">
-          Banked {when.format(round.createdAt)}. {dealt}
+          Banked {when.format(round.createdAt)}. {dealt} {describeVotes(round.votes)}
         </p>
       </header>
 

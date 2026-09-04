@@ -1,5 +1,6 @@
 import Link from "next/link"
 import { LANGUAGES, TOPICS } from "@guessly/protocol"
+import type { RoundOrder } from "@guessly/bank"
 
 import { Field } from "@/components/site/field"
 import { Button } from "@guessly/ui/components/ui/button"
@@ -11,7 +12,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@guessly/ui/components/ui/select"
-import { isFiltered, languageChoice, type RoundQuery } from "@/lib/query"
+import { ROUND_ORDERS, isNarrowed, languageChoice, type RoundQuery } from "@/lib/query"
 
 /**
  * The filter, as a GET form. Submitting it is a navigation to the address
@@ -20,11 +21,16 @@ import { isFiltered, languageChoice, type RoundQuery } from "@/lib/query"
  * somebody can paste. The page number is deliberately not a field — a new
  * filter starts on page one.
  *
- * The three selects are the one part that needs a script. Each is shadcn's
+ * The four selects are the one part that needs a script. Each is shadcn's
  * Select — a button and a listbox — and what carries its choice into the GET
  * is the hidden native `<select>` Radix renders beside it, so the URL is
  * still the state; only *changing* a dropdown needs JavaScript, and the
  * search box and the button never do.
+ *
+ * The order sits among the filters because it is chosen the same way and
+ * lands in the same address, though it narrows nothing: "most disliked
+ * first" is how an operator finds the rounds to fix, and a threshold they
+ * would have to guess at is not.
  */
 
 /**
@@ -35,6 +41,12 @@ import { isFiltered, languageChoice, type RoundQuery } from "@/lib/query"
  */
 const ANY = "any"
 
+const ORDER_LABELS: Record<RoundOrder, string> = {
+  newest: "Newest first",
+  liked: "Most liked first",
+  disliked: "Most disliked first",
+}
+
 function RoundFilters({ query }: { query: RoundQuery }) {
   const { filter } = query
 
@@ -42,7 +54,7 @@ function RoundFilters({ query }: { query: RoundQuery }) {
     <form
       method="get"
       action="/rounds"
-      className="grid gap-4 rounded-xl bg-card/50 p-4 ring-1 ring-border/40 sm:grid-cols-2 lg:grid-cols-[1fr_1fr_1fr_1.4fr_auto] lg:items-end"
+      className="grid gap-4 rounded-xl bg-card/50 p-4 ring-1 ring-border/40 sm:grid-cols-2 lg:grid-cols-3 lg:items-end xl:grid-cols-[1fr_1fr_1fr_1fr_1.4fr_auto]"
     >
       <Field id="filter-topic" label="Topic">
         <Select name="topic" defaultValue={filter.topic ?? ANY}>
@@ -94,6 +106,21 @@ function RoundFilters({ query }: { query: RoundQuery }) {
         </Select>
       </Field>
 
+      <Field id="filter-order" label="Order">
+        <Select name="order" defaultValue={query.order}>
+          <SelectTrigger id="filter-order" className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {ROUND_ORDERS.map((order) => (
+              <SelectItem key={order} value={order}>
+                {ORDER_LABELS[order]}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </Field>
+
       <Field id="filter-q" label="Search">
         <Input
           id="filter-q"
@@ -108,7 +135,7 @@ function RoundFilters({ query }: { query: RoundQuery }) {
         <Button type="submit" variant="secondary" className="h-8">
           Filter
         </Button>
-        {isFiltered(filter) && (
+        {isNarrowed(query) && (
           <Link
             href="/rounds"
             className="rounded-sm text-sm text-muted-foreground outline-none hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50"

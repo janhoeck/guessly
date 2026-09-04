@@ -108,11 +108,21 @@ export interface RoundFilter {
 }
 
 export interface RoundPage {
-  /** Newest first. */
+  /** In the order `list` was asked for: newest first, unless it was told otherwise. */
   rounds: BankedRoundRecord[];
   /** How many match the filter in all, so a page can say where it is. */
   total: number;
 }
+
+/**
+ * Which way a page of rounds is read. `newest` is the shelf as it was
+ * stocked; the other two rank it by the votes — see `RoundVoteTally` — most
+ * first, the other thumb breaking a tie (a round liked four times and never
+ * disliked comes before one liked four times and disliked twice), and newest
+ * after that. A ranking rather than a threshold, because the round worth a
+ * look is the top of a list and not a number an operator would know to type.
+ */
+export type RoundOrder = "newest" | "liked" | "disliked";
 
 /**
  * An edit. Every field is optional and only the named ones change; `texts`
@@ -219,8 +229,12 @@ export interface RoundRepository {
   // it. The game never calls any of these — it draws and votes, and nothing
   // else.
 
-  /** A page of rounds, newest first, narrowed by `filter`. */
-  list(filter: RoundFilter, page: { offset: number; limit: number }): Promise<RoundPage>;
+  /**
+   * A page of rounds narrowed by `filter`, newest first unless `order` says
+   * otherwise. The order never changes the total: it is the same shelf read
+   * from a different end.
+   */
+  list(filter: RoundFilter, page: { offset: number; limit: number }, order?: RoundOrder): Promise<RoundPage>;
   /** One round with every language it holds, or null. */
   get(id: number): Promise<BankedRoundRecord | null>;
   /**

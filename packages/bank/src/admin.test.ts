@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ALL_TOPIC_IDS } from "@guessly/protocol";
+import { ALL_TOPIC_IDS, type RoundVote } from "@guessly/protocol";
 import { createInMemoryRoundRepository } from "./memory.js";
-import type { NewBankedRound, RoundRepository } from "./repository.js";
+import type { NewBankedRound, RoundOrder, RoundRepository } from "./repository.js";
 
 /**
  * The admin's half of the repository: reading the shelf as a shelf and
@@ -298,6 +298,38 @@ describe("votes", () => {
       ["Japan", { up: 0, down: 0 }],
       ["France", { up: 2, down: 1 }],
     ]);
+  });
+
+  it("ranks the shelf by either thumb, the other thumb and then newest breaking ties", async () => {
+    await repo.insert(named("France", "Frankreich"), NOON, false);
+    await repo.insert(named("Japan", "Japan"), NOON + 1, false);
+    await repo.insert(named("Peru", "Peru"), NOON + 2, false);
+    await repo.insert(named("Chad", "Tschad"), NOON + 3, false);
+    const cast = async (subject: string, ...votes: RoundVote[]) => {
+      const roundId = await idOf(subject);
+      for (const vote of votes) await repo.recordVote({ roundId, language: "en", vote, at: NOON + 10 });
+    };
+    await cast("France", "up", "up", "down");
+    await cast("Japan", "up", "up");
+    await cast("Peru", "down");
+
+    const subjects = async (order: RoundOrder, page = all) =>
+      (await repo.list({}, page, order)).rounds.map((r) => r.subject);
+
+    // Newest is the plain list, votes or no votes.
+    expect(await subjects("newest")).toEqual(["Chad", "Peru", "Japan", "France"]);
+    // Japan and France are liked alike, and Japan was disliked less; Chad
+    // and Peru are liked alike, and Chad was disliked less.
+    expect(await subjects("liked")).toEqual(["Japan", "France", "Chad", "Peru"]);
+    // Peru and France are disliked alike, and Peru was liked less.
+    expect(await subjects("disliked")).toEqual(["Peru", "France", "Chad", "Japan"]);
+    // The ranking holds across pages.
+    expect(await subjects("disliked", { offset: 1, limit: 2 })).toEqual(["France", "Chad"]);
+
+    // An order narrows nothing: the filter still decides what is on the list.
+    const narrowed = await repo.list({ search: "an" }, all, "disliked");
+    expect(narrowed.total).toBe(2);
+    expect(narrowed.rounds.map((r) => r.subject)).toEqual(["France", "Japan"]);
   });
 
   it("refuses a vote on a round that is not there", async () => {

@@ -2,7 +2,7 @@ import Link from "next/link"
 import { LANGUAGES, isTopicId, topicById } from "@guessly/protocol"
 import type { TopicStock } from "@guessly/bank"
 
-import { roundsHref } from "@/lib/query"
+import { DEFAULT_ORDER, roundsHref } from "@/lib/query"
 import { cn } from "@guessly/ui/lib/utils"
 
 /**
@@ -51,7 +51,7 @@ function ShelfTable({ stock }: { stock: TopicStock[] }) {
               <tr key={shelf.topic} className="transition-colors hover:bg-accent/40">
                 <th scope="row" className="px-4 py-3 text-left font-normal">
                   <Link
-                    href={roundsHref({ filter: { topic: shelf.topic }, page: 1 })}
+                    href={roundsHref({ filter: { topic: shelf.topic }, order: DEFAULT_ORDER, page: 1 })}
                     className="inline-flex items-center gap-2 rounded-sm font-medium outline-none hover:text-primary focus-visible:ring-[3px] focus-visible:ring-ring/50"
                   >
                     {isThinnest && (
@@ -96,6 +96,7 @@ function ShelfTable({ stock }: { stock: TopicStock[] }) {
                         <Link
                           href={roundsHref({
                             filter: { topic: shelf.topic, missingLanguage: language.id },
+                            order: DEFAULT_ORDER,
                             page: 1,
                           })}
                           className="ml-2 rounded-sm text-xs text-primary underline-offset-4 outline-none hover:underline focus-visible:ring-[3px] focus-visible:ring-ring/50"

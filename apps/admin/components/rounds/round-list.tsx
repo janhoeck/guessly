@@ -7,6 +7,7 @@ import type { DeleteManyState } from "@/app/(admin)/rounds/actions"
 import { RoundCheckbox } from "@/components/rounds/round-checkbox"
 import { RoundSelection, SelectAllRounds } from "@/components/rounds/round-selection"
 import { RoundThumb } from "@/components/rounds/round-thumb"
+import { VoteTally } from "@/components/rounds/vote-tally"
 import { Badge } from "@guessly/ui/components/ui/badge"
 import { ROUNDS_PER_PAGE, isFiltered, roundsHref, type RoundQuery } from "@/lib/query"
 
@@ -20,6 +21,18 @@ import { ROUNDS_PER_PAGE, isFiltered, roundsHref, type RoundQuery } from "@/lib/
  * taken off the shelf in one go. The rows are still rendered here, on the
  * server; the checkbox on each is the browser's, and only the count of
  * them and the button they feed need a script.
+ *
+ * The votes column is the one the address can rank the list by, and it says
+ * so with `aria-sort` when it does — the plain list is newest first, which
+ * no column is.
+ *
+ * The table is `table-fixed`: the header row sets every column's width and
+ * the subject takes what is left, so a long subject or answer truncates in
+ * its cell instead of widening the table past the page. In the browser's
+ * default layout a cell is as wide as its text, `max-w` on it is ignored,
+ * and one long row put a horizontal scrollbar under the whole list. The
+ * `min-w` is the floor below which scrolling is the lesser evil — a phone,
+ * not a laptop.
  */
 function RoundList({
   query,
@@ -70,7 +83,7 @@ function RoundList({
   return (
     <RoundSelection action={action} total={rounds.length} range={`${from}–${to} of ${total}`}>
       <div className="overflow-x-auto rounded-xl bg-card ring-1 ring-border/60">
-        <table className="w-full text-sm">
+        <table className="w-full min-w-[56rem] table-fixed text-sm">
           <thead>
             <tr className="text-left text-xs tracking-[0.2em] text-muted-foreground uppercase">
               <th scope="col" className="w-10 py-3 pr-1 pl-4">
@@ -79,16 +92,23 @@ function RoundList({
               <th scope="col" className="px-4 py-3 font-medium">
                 Round
               </th>
-              <th scope="col" className="px-4 py-3 font-medium">
+              <th scope="col" className="w-40 px-4 py-3 font-medium">
                 Topic
               </th>
               {LANGUAGES.map((language) => (
-                <th key={language.id} scope="col" className="px-4 py-3 font-medium">
+                <th key={language.id} scope="col" className="w-44 px-4 py-3 font-medium">
                   {language.label}
                 </th>
               ))}
-              <th scope="col" className="px-4 py-3 text-right font-medium">
+              <th scope="col" className="w-20 px-4 py-3 text-right font-medium">
                 Dealt
+              </th>
+              <th
+                scope="col"
+                aria-sort={query.order === "newest" ? undefined : "descending"}
+                className="w-28 px-4 py-3 text-right font-medium"
+              >
+                Votes
               </th>
             </tr>
           </thead>
@@ -111,7 +131,7 @@ function RoundRow({ round }: { round: BankedRoundRecord }) {
       <td className="w-10 py-2.5 pr-1 pl-4">
         <RoundCheckbox name="id" value={round.id} aria-label={`Select ${round.subject}`} />
       </td>
-      <th scope="row" className="max-w-96 px-4 py-2.5 text-left font-normal">
+      <th scope="row" className="px-4 py-2.5 text-left font-normal">
         <Link
           href={`/rounds/${round.id}`}
           className="flex min-w-0 items-center gap-3 rounded-sm outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
@@ -129,7 +149,7 @@ function RoundRow({ round }: { round: BankedRoundRecord }) {
       {LANGUAGES.map((language) => {
         const text = round.texts[language.id]
         return (
-          <td key={language.id} lang={language.tag} className="max-w-56 truncate px-4 py-2.5">
+          <td key={language.id} lang={language.tag} className="truncate px-4 py-2.5">
             {text === undefined ? (
               <span aria-label={`Not written in ${language.label}`} className="text-muted-foreground/50">
                 —
@@ -141,6 +161,9 @@ function RoundRow({ round }: { round: BankedRoundRecord }) {
         )
       })}
       <td className="px-4 py-2.5 text-right text-muted-foreground tabular-nums">{round.timesServed}</td>
+      <td className="px-4 py-2.5 text-right">
+        <VoteTally votes={round.votes} />
+      </td>
     </tr>
   )
 }

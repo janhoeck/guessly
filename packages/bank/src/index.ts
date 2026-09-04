@@ -15,6 +15,7 @@ export {
   type NewBankedRound,
   type NewRoundVote,
   type RoundFilter,
+  type RoundOrder,
   type RoundPage,
   type RoundPatch,
   type RoundRepository,

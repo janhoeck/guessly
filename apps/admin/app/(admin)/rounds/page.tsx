@@ -18,10 +18,11 @@ export default async function RoundsPage({
 }) {
   const query = parseRoundQuery(await searchParams);
   const { repository } = await getBank();
-  const page = await repository.list(query.filter, {
-    offset: (query.page - 1) * ROUNDS_PER_PAGE,
-    limit: ROUNDS_PER_PAGE,
-  });
+  const page = await repository.list(
+    query.filter,
+    { offset: (query.page - 1) * ROUNDS_PER_PAGE, limit: ROUNDS_PER_PAGE },
+    query.order,
+  );
   const pages = Math.max(1, Math.ceil(page.total / ROUNDS_PER_PAGE));
 
   return (

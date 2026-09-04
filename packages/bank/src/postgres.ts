@@ -19,13 +19,20 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 import pg from "pg";
-import { ALL_TOPIC_IDS, type LanguageId, type RoundKind, type TopicId } from "@guessly/protocol";
+import {
+  ALL_TOPIC_IDS,
+  type LanguageId,
+  type RoundKind,
+  type RoundVote,
+  type TopicId,
+} from "@guessly/protocol";
 import {
   answerKey,
   type BankedRound,
   type BankedRoundRecord,
   type BankedRoundText,
   type NewBankedRound,
+  type RoundOrder,
   type RoundRepository,
   type RoundVoteTally,
   type TopicStock,
@@ -112,6 +119,32 @@ const recordColumns = {
  */
 const containing = (term: string): string =>
   `%${term.replace(/[\\%_]/g, (character) => `\\${character}`)}%`;
+
+/**
+ * How many thumbs of one kind a round has, as something the list can sort
+ * by. A correlated count rather than a join onto a grouped tally, so the
+ * plain order — newest, which never asks — pays nothing for the votes
+ * existing, and a ranked page is one probe of `round_votes_round` per
+ * candidate row: milliseconds for a bank of thousands.
+ */
+const thumbs = (vote: RoundVote): SQL<number> =>
+  sql<number>`(SELECT count(*) FROM ${roundVotes} WHERE ${roundVotes.roundId} = ${rounds.id} AND ${roundVotes.vote} = ${vote})`;
+
+/**
+ * The list's ORDER BY. A ranking by one thumb is broken by the other and
+ * then by newest: two rounds liked four times are told apart by which was
+ * disliked less, and two nobody has judged read as the plain list does.
+ */
+const ordering = (order: RoundOrder): SQL[] => {
+  switch (order) {
+    case "newest":
+      return [desc(rounds.id)];
+    case "liked":
+      return [desc(thumbs("up")), asc(thumbs("down")), desc(rounds.id)];
+    case "disliked":
+      return [desc(thumbs("down")), asc(thumbs("up")), desc(rounds.id)];
+  }
+};
 
 const toTextRow = (roundId: number, language: LanguageId, text: BankedRoundText) => ({
   roundId,
@@ -414,7 +447,7 @@ export function createDrizzleRoundRepository(options: {
       });
     },
 
-    async list(filter, page) {
+    async list(filter, page, order = "newest") {
       const db = open();
       /** A text row of *this* round, for the two per-language questions below. */
       const ownText = (language: LanguageId) =>
@@ -446,7 +479,7 @@ export function createDrizzleRoundRepository(options: {
           .select(recordColumns)
           .from(rounds)
           .where(where)
-          .orderBy(desc(rounds.id))
+          .orderBy(...ordering(order))
           .limit(page.limit)
           .offset(page.offset),
       ]);

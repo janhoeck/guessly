@@ -386,8 +386,12 @@ missed.
   question to fix rather than a picture to replace, and because a table that
   only ever grows by insert needs no lock. The admin reads the tally as
   `BankedRoundRecord.votes` — counted in the database, one query per page like
-  the texts — though nothing in the admin *shows* it yet; that is the next
-  job.
+  the texts — and shows it: a thumbs column on the list, a sentence in the
+  round page's ledger line, and `order=liked` or `order=disliked` on the
+  list's address to read the shelf by it, most first, the other thumb
+  breaking ties and then newest. A ranking rather than a threshold, because
+  the round worth a look is the top of a list and not a number an operator
+  would know to type.
 
 ## Winning
 
@@ -713,15 +717,21 @@ opened on the first request that needs it and parked on `globalThis`, because
 `next dev` reloads server modules on every edit and a module variable would
 be a fresh pool, a fresh `HeadBucket` and a fresh migration run each time.
 
-**The filter is the URL.** `/rounds?topic=…&kind=…&language=…&q=…&page=…`
+**The filter is the URL.** `/rounds?topic=…&kind=…&language=…&q=…&order=…&page=…`
 is read and written by `lib/query.ts` alone, so a page of rounds is a link
 and the filter form is a plain GET form: the URL is its state, the browser
 does the submitting, and the only script in it is shadcn's Select on the
-three dropdowns, which carries its choice into the GET through the hidden
+four dropdowns, which carries its choice into the GET through the hidden
 native `<select>` Radix renders beside it. The
 language question has four answers — written in one, or missing one — and
 the shelves page links straight to the missing ones, because a round
-missing German is a job, not a statistic. Pages compose and hold nothing;
+missing German is a job, not a statistic. `order` is the one parameter that
+narrows nothing: the list is newest first unless it says `liked` or
+`disliked`, and then it is the same list — same filter, same total — ranked
+by that thumb, with the votes column marked `aria-sort` to say so. The
+ranking is the repository's (`RoundOrder`, the third argument to `list`),
+because it is a Postgres ORDER BY and not a sort of the page in hand. Pages
+compose and hold nothing;
 the islands are the forms, each around its own server action, and the
 fields are uncontrolled with the round as their default, so the admin keeps
 no copy of anything the server did not just send.
@@ -1145,8 +1155,8 @@ wiped clean for every test, and `admin.test.ts` runs the admin's half of it
 the same way — listing and searching, the edit that may not make a duplicate
 or leave a round with no language, the deletions — one, or several in one
 transaction — that hand back what they removed, the picture two rounds
-share, and the votes, counted per round and taken with a deleted one; the
-game's `bank/source.test.ts`
+share, and the votes, counted per round, ranked by either thumb and taken
+with a deleted one; the game's `bank/source.test.ts`
 drives the consuming side —
 draws, cross-language aliases, and the misses that fail a round — against it;
 and `tools/fill`'s `fill.test.ts` drives the producing side — thinnest shelf
@@ -1205,9 +1215,10 @@ These are deliberately not decided yet. Ask before assuming an answer:
   nothing *automatic* retires a round nobody solves or nobody liked, turns
   near-miss guesses into aliases, or decides how deep a topic's shelf
   *should* be: the fill tool fills evenly for as long as it runs. The votes
-  are kept now (see Rating a Round) and counted onto every record the admin
-  reads, but not yet shown; the rest of the play data — who solved a round,
-  and how fast — is still thrown away at reveal.
+  are kept now (see Rating a Round) and the admin shows them, with the most
+  disliked rounds a sort away — but a person still has to look; the rest of
+  the play data — who solved a round, and how fast — is still thrown away at
+  reveal.
 - **The admin creates nothing.** It edits, replaces and deletes, and the fill
   tool is still the only way a round is born. A hand-made round — a picture
   uploaded from scratch with its texts typed in — is the obvious next thing

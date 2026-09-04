@@ -34,12 +34,11 @@ export interface TopicDefinition {
 export const TOPICS = [
   { id: "flags", label: "Flags", kind: "image", hint: "Countries and territories" },
   { id: "logos", label: "Logos & brands", kind: "image", hint: "Marks with the name cropped out" },
-  { id: "movies", label: "Movies", kind: "image", hint: "Props, places and faces from the films" },
-  // Not "In-game screenshots": for most modern games there is no freely
-  // licensed screenshot anywhere the generator can reach, and a hint naming
-  // one is an instruction to go and fail — which it did, for every fill run
-  // this topic was picked in.
-  { id: "games", label: "Video games", kind: "image", hint: "Screenshots, cabinets, consoles, characters" },
+  { id: "movies", label: "Movies", kind: "image", hint: "Stills, props and faces from the films" },
+  // "In-game screenshots" used to be an instruction to go and fail: the open
+  // archives hold none for most modern games. The lookup now asks the Steam
+  // store and the web as well, which is where the screenshots are.
+  { id: "games", label: "Video games", kind: "image", hint: "In-game screenshots, consoles, characters" },
   { id: "landmarks", label: "Landmarks", kind: "image", hint: "Buildings, cities, natural wonders" },
   { id: "animals", label: "Animals", kind: "image", hint: "Species, common and obscure" },
   { id: "food", label: "Food & drink", kind: "image", hint: "Dishes from everywhere" },

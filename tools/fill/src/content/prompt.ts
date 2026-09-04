@@ -89,49 +89,53 @@ appear in it.
 
 # Image rounds
 
-**Look the pictures up. Never write a file name from memory.** You have
-\`${SEARCH}\`: give it a subject's plain English name and it returns files that
-really exist on Wikimedia Commons and English Wikipedia, with their sizes and
-captions. A plausible-sounding name is almost never the real one — the file is
-"Screenshot from the Minecraft Nether.png", not "Minecraft screenshot.png" —
-and an invented URL costs the whole round.
+**Look the pictures up. Never write a URL from memory.** You have
+\`${SEARCH}\`: give it the subject's plain English name — and, when the kind
+of picture matters, \`looking_for\` saying which kind ("gameplay screenshot",
+"logo symbol only", "film still") — and it returns pictures that really exist,
+tagged by where they were found: the web, the Steam store, Wikipedia, Commons.
+Any site is fine; the file is downloaded once and served from our own host.
+A URL you write yourself is almost never real, and it is tried last.
 
 The order is fixed: pick a subject, \`${SEARCH}\` it, choose from what comes
 back, then call \`${SUBMIT}\`. If the results hold nothing that shows the
-subject plainly, search a different subject rather than submitting a name you
-hoped for. You may search up to three times.
+subject plainly, search again with a different \`looking_for\` or a different
+subject. You may search up to three times.
 
 Put three to five URLs in \`image_urls\`, best first, **copied verbatim from
-the results** — different files, not one file five ways. The server downloads
-them in order and keeps the first that works.
+the results** — different pictures, not one picture five ways. The server
+downloads them in order and keeps the first that passes.
 
-Choosing well is the part the search cannot do for you:
+**Every download is looked at before it is accepted.** A second model checks
+that the subject is large and plain and that nothing on the picture spells
+the answer out. A titled poster, a wordmark, a labelled flag, a screenshot
+with the game's logo in the corner, a captioned diagram — each is rejected,
+and a round whose every candidate is rejected costs the attempt. So choose as
+if you could see them:
 
-- **The picture must show the subject large and plain.** Prefer the big
-  photograph over the diagram, the crowd shot or the detail.
-- **It must not contain the answer in writing** — no titled poster, no
-  wordmark, no labelled flag, no captioned diagram. A logo round shows the
-  symbol alone (the swoosh, the bitten apple); a brand whose only mark is its
-  name is a different subject.
-- **Read the caption before you pick.** It is how a screenshot is told from a
-  box shot, and a photograph of the thing from a photograph of a sign about it.
+- **The subject large and plain.** The big photograph over the diagram, the
+  crowd shot or the detail; one scene over a collage or a grid of thumbnails.
+- **Nothing that names the answer.** A logo round shows the symbol alone (the
+  swoosh, the bitten apple); a brand whose only mark is its name is a
+  different subject.
+- **Read the tag and the caption before you pick.** A Steam screenshot is a
+  screenshot; a web result's title says whether it is a still, a poster or
+  the cover image of a review.
 
-**A film or a show was never photographed** — its article holds a poster or a
-wordmark, which spells the title out. Make the physical residue the subject
-instead (the DeLorean, the costume, the actor at a premiere) and let the work
-be the answer. Memes and TV moments likewise: ask about the real animal, person
-or place in it — Grumpy Cat, the Shiba Inu behind Doge. **A video game is shown
-as itself where an archive has one**: some games have a freely licensed
-gameplay screenshot and some have nothing but a logo, and only the search says
-which — never box art, key art or a title screen, which all spell the name out.
-When a game turns up no usable screenshot, switch to what surrounds it: the
-arcade cabinet, the console, the controller, the character as a statue or at a
-convention.
+**A video game is shown as a gameplay screenshot** — a scene from the middle
+of the game, the kind a player would recognise. On a games round the Steam
+store's own screenshots lead the results; for a game that is not on Steam,
+ask the web with \`looking_for: "gameplay screenshot"\`. Never box art, key
+art, a title screen, a menu, or a trailer frame with the logo on it. Only
+when no screenshot exists at all: the arcade cabinet, the console, the
+character as a statue or at a convention.
 
-Licence is not a filter — the file is downloaded once and served from our own
-host, so a restrictively licensed image is as usable as a free one. Only a URL
-that will not download is wasted, which is why every one of them comes out of
-\`${SEARCH}\`.
+**A film or a show is shown as a frame from it** — a scene, a prop, a
+character in costume — never the poster, which spells the title out. Ask the
+web with \`looking_for: "film still"\`. The physical residue (the DeLorean,
+the costume, the actor at a premiere) is the fallback. Memes and TV moments
+likewise: ask about the real animal, person or place in them — Grumpy Cat,
+the Shiba Inu behind Doge.
 
 # Lyrics rounds
 
@@ -161,9 +165,10 @@ be the band.
 
 # Reminder
 
-On an image round: \`${SEARCH}\` first, then \`${SUBMIT}\` with URLs copied
-from its results. One \`${SUBMIT}\` call, one entry in "versions" for every
-language you were given, the other kind's fields empty. Nothing else.`;
+On an image round: \`${SEARCH}\` first — with \`looking_for\` when the kind of
+picture matters — then \`${SUBMIT}\` with URLs copied from its results. One
+\`${SUBMIT}\` call, one entry in "versions" for every language you were given,
+the other kind's fields empty. Nothing else.`;
 
 /** The per-round half: short, last, and the only part that varies. */
 export function buildUserPrompt(options: {
@@ -211,9 +216,10 @@ export function buildUserPrompt(options: {
   //
   // The note says what to do about it as well as what went wrong, because the
   // two do not follow from each other: a duplicate wants a different subject,
-  // a leaked answer wants the same subject asked about differently, and a dead
-  // URL now usually wants the same subject with the file names the lookup just
-  // handed back. A blanket "pick something else" used to be pinned here and
+  // a leaked answer wants the same subject asked about differently, a picture
+  // refused on sight wants a different picture of the same subject, and a
+  // dead URL wants the same subject with the URLs the lookup just handed
+  // back. A blanket "pick something else" used to be pinned here and
   // contradicted every note that had a better idea.
   if (options.retryNote) {
     lines.push(`Your previous attempt was rejected: ${options.retryNote}`);

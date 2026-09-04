@@ -64,6 +64,8 @@
         "DEEPSEEK_API_KEY",
         "DEEPSEEK_MODEL",
         "DEEPSEEK_REASONING_EFFORT",
+        "DEEPSEEK_VISION_MODEL",
+        "SERPER_API_KEY",
         "DATABASE_URL",
         "S3_ENDPOINT",
         "S3_REGION",

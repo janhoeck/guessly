@@ -246,6 +246,27 @@ describe("delete and imageReferences", () => {
     expect(await repo.delete(id)).toBeNull();
   });
 
+  /** One call however many were ticked, and only what was there comes back. */
+  it("removes several at once and hands back the ones that were there, newest first", async () => {
+    await repo.insert(named("France", "Frankreich"), NOON, false);
+    await repo.insert(named("Japan", "Japan"), NOON + 1, false);
+    await repo.insert(named("Bhutan", "Bhutan"), NOON + 2, false);
+    const france = await idOf("France");
+    const japan = await idOf("Japan");
+
+    const gone = await repo.deleteMany([france, japan, france + 1000]);
+    expect(gone.map((r) => r.subject)).toEqual(["Japan", "France"]);
+    expect(gone[1]?.texts.de?.answer).toBe("Frankreich");
+    expect(await repo.get(france)).toBeNull();
+    expect(await repo.get(japan)).toBeNull();
+    expect((await repo.list({}, all)).rounds.map((r) => r.subject)).toEqual(["Bhutan"]);
+    expect(await repo.answers("flags")).toEqual(["Bhutan", "Bhutan"]);
+
+    expect(await repo.deleteMany([japan])).toEqual([]);
+    expect(await repo.deleteMany([])).toEqual([]);
+    expect((await repo.list({}, all)).total).toBe(1);
+  });
+
   /** Two rounds, one picture: the picture outlives the first deletion. */
   it("counts how many rounds still show a picture", async () => {
     const shared = `${"b".repeat(64)}.png`;

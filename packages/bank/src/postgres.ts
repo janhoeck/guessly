@@ -174,12 +174,28 @@ export function createDrizzleRoundRepository(options: {
   const textsFor = async (roundId: number, db: BankDatabase = open()): Promise<BankedRound["texts"]> =>
     (await textsForAll(db, [roundId])).get(roundId) ?? {};
 
-  /** One round with its ledger and every language, through whichever database. */
-  const recordFor = async (db: BankDatabase, id: number): Promise<BankedRoundRecord | null> => {
-    const [row] = await db.select(recordColumns).from(rounds).where(eq(rounds.id, id)).limit(1);
-    if (row === undefined) return null;
-    return toRecord(row, await textsFor(id, db));
+  /**
+   * These rounds with their ledgers and every language, newest first,
+   * through whichever database. Only the ones that exist: an id nobody
+   * holds is simply not in the answer.
+   */
+  const recordsFor = async (db: BankDatabase, ids: readonly number[]): Promise<BankedRoundRecord[]> => {
+    if (ids.length === 0) return [];
+    const rows = await db
+      .select(recordColumns)
+      .from(rounds)
+      .where(inArray(rounds.id, [...ids]))
+      .orderBy(desc(rounds.id));
+    const texts = await textsForAll(
+      db,
+      rows.map((row) => row.id),
+    );
+    return rows.map((row) => toRecord(row, texts.get(row.id) ?? {}));
   };
+
+  /** One round with its ledger and every language, through whichever database. */
+  const recordFor = async (db: BankDatabase, id: number): Promise<BankedRoundRecord | null> =>
+    (await recordsFor(db, [id]))[0] ?? null;
 
   /**
    * Does the topic already answer to this word in this language, on a round
@@ -207,6 +223,26 @@ export function createDrizzleRoundRepository(options: {
       )
       .limit(1);
     return clash ?? null;
+  };
+
+  /**
+   * What `delete` and `deleteMany` both are: read what is about to go, then
+   * remove it, in one transaction so the record handed back is the record
+   * that went. The texts go with the rounds — the foreign key cascades.
+   */
+  const deleteMany = async (ids: readonly number[]): Promise<BankedRoundRecord[]> => {
+    if (ids.length === 0) return [];
+    return await open().transaction(async (tx) => {
+      const records = await recordsFor(tx, ids);
+      if (records.length === 0) return records;
+      await tx.delete(rounds).where(
+        inArray(
+          rounds.id,
+          records.map((record) => record.id),
+        ),
+      );
+      return records;
+    });
   };
 
   return {
@@ -460,14 +496,11 @@ export function createDrizzleRoundRepository(options: {
     },
 
     async delete(id) {
-      return await open().transaction(async (tx) => {
-        const record = await recordFor(tx, id);
-        if (record === null) return null;
-        // The texts go with it: the foreign key cascades.
-        await tx.delete(rounds).where(eq(rounds.id, id));
-        return record;
-      });
+      const [gone] = await deleteMany([id]);
+      return gone ?? null;
     },
+
+    deleteMany,
 
     async imageReferences(imageFile) {
       const [row] = await open()

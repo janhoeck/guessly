@@ -102,7 +102,12 @@ calls the AI** — it does not even depend on the SDK:
   the server log, and the spend stops when the tool does. A topic whose
   generation fails is benched with a doubling backoff, so a topic run dry backs
   out of the rotation on its own and a dead API rests the whole loop instead of
-  burning retries.
+  burning retries. `pnpm fill -- --topic <id>` confines a run to the shelves
+  named — repeat the flag, or comma-separate the ids — with the same loop,
+  gauge and benching over a shorter list, so the topic a lobby just failed on
+  can be topped up without paying for the other eleven first. `parseFillArgs`
+  in `config.ts` reads it, and refuses an id it does not know rather than
+  quietly filling everything.
 - **The bank is the only way a round reaches players**, so what used to be its
   serving fallbacks are now refusals at fill time: an image that cannot be
   downloaded or stored fails the fill — nothing is banked that players could
@@ -133,7 +138,10 @@ which is what an empty German shelf looks like until a fill run stocks it.
 picture — whole file, capped, format verified by magic bytes rather than by
 anybody's content-type header; the check and the cap are the bank's own
 (`sniffImage`, `MAX_IMAGE_BYTES`), so the admin's upload passes the same
-one — and the bank stores it content-addressed
+one; asked for as a browser would, with the page the picture was found on
+as the referer, because the web's CDNs check for that where the archives ask
+for a named agent instead (`headersFor` in `download.ts`) — and the bank
+stores it content-addressed
 (SHA-256 name) in S3-compatible object storage, from where the game server
 reads it and serves it at its own origin's `/img/<hash>.<ext>`. Players never
 load from a third-party host, so hotlink blocks, CORS and link rot cannot kill
@@ -205,34 +213,85 @@ which nothing but a lookup was going to produce — so whole topics were
 unfillable, three attempts and five invented URLs each, ten minutes and a
 bench, every time they came up.
 
-`tools/fill/src/content/wikimedia.ts` is the lookup, offered to the model on
-image rounds as a second tool, `search_images`: MediaWiki's API, keyless, on
-the same host the bytes come from, answering with file names that exist and
-their sizes and captions. It asks two questions at once and interleaves the
-answers — what is on the subject's **English Wikipedia article**, which is
-guaranteed to be *about* the subject, and what **Commons** holds under that
-name, which is ranked by relevance and is the only source for a subject with
-no article. Alternating is what stops one of them spending the whole list;
-filling from the article first showed twelve incidental photographs and never
-the cosplay shot Commons had ranked first.
+`tools/fill/src/content/search.ts` is the lookup, offered to the model on
+image rounds as a second tool, `search_images`: one call that asks every
+configured **provider** at once and merges what they found into a list
+tagged by source, with sizes and captions and the URL last on every line so
+it is the thing to copy. The model may add `looking_for` — "gameplay
+screenshot", "logo symbol only", "film still" — which the web search takes
+as part of the query; the archives are asked by the subject's name alone,
+because Commons' full-text search of "Portal 2 gameplay screenshot" matched
+nothing where "Portal 2" matched plenty. The providers are worth different things, which
+is why there are several and why they are merged rather than tried in turn:
 
-**The lookup finds; the model chooses.** That split is the design. A tool that
-picked would have to know that a wordmark ruins a logo round, that a poster
-spells a film's title out, that box art is not a screenshot — judgements the
-prompt makes and an API cannot. What the tool does instead is make every
-candidate URL real, which is the half the model was bad at. It still steers
-toward subjects the open archives actually photograph: for pop culture the
-person or thing behind the phenomenon rather than the meme; for a game, the
-freely licensed gameplay screenshot when the search turns one up and the
-arcade cabinet, console or cosplayed character when it does not.
+- **The web** (`serper.ts`: Google Images, as serper.dev returns it) is the
+  source for what the archives do not hold: a frame from a film, a gameplay
+  screenshot of a console game, the swoosh on its own. This game is
+  non-commercial and serves every picture from its own host, so where a file
+  came from stops mattering once it is downloaded — *any site is fine*, and
+  the prompt says so. Serper is a third party running the Google query, not
+  Google — chosen because Google withdrew "search the entire web" from new
+  Programmable Search Engines in January 2026 (fifty named domains is the
+  most a new one searches, and the old whole-web engines end at the start
+  of 2027) and Brave's image API wants a card on file. It needs
+  `SERPER_API_KEY` (a few thousand free queries on signup, fractions of a
+  cent each after), is optional — an account refusal benches it for an hour
+  and the other sources carry on, and without the key the tool is the tool
+  as it was — and every result is downloaded and sniffed like any other,
+  because a scraper's idea of an image URL is a claim. A Google Custom
+  Search provider over a hand-picked domain list was written and removed
+  again in the same day: without a key it was a config branch and a test
+  file for a worse version of this lane, and it is in the history if Serper
+  ever goes away.
+- **The Steam store** (`steam.ts`, keyless) leads the list on a games round:
+  a search by title for the app, then the publisher's own screenshots at
+  1920×1080. A screenshot is what a games round should show, and this is
+  where they are for most PC games.
+- **Wikipedia and Commons** (`wikimedia.ts`, keyless, two lanes): what is on
+  the subject's English article, which is guaranteed to be *about* the
+  subject, and what Commons holds under its name, which is ranked by
+  relevance and the only archive for a subject with no article. The lanes
+  are interleaved with the web's so no single source spends the whole list;
+  filling from the article first showed twelve incidental photographs and
+  never the cosplay shot Commons had ranked first.
 
-Image rounds still return up to five candidate URLs, best first, and the first
-that downloads as an actual image wins — the download check has not moved, it
-just catches a bad *choice* now rather than a bad memory. A round whose
-candidates all fail is retried with the lookup run again on this side and the
-real file names quoted into the note, so the retry works even when the model
-skipped the tool. Lyrics rounds involve no URLs and no lookup: a paraphrase is
-written from what the model already knows.
+**The lookup finds; the model chooses; the judge looks.** That split is the
+design. A tool that picked would have to know that a wordmark ruins a logo
+round, that a poster spells a film's title out, that box art is not a
+screenshot — judgements the prompt makes and an API cannot. What the tool
+does is make every candidate URL real, which is the half the model was bad
+at, and what `vision.ts` does is catch the choices the prompt's rules could
+not: **every download is shown to a vision model** (`DEEPSEEK_VISION_MODEL`,
+`deepseek-v4-flash-vision-exp` by default, on the same key, a few hundred
+tokens a picture) with the subject, the question and every answer and alias
+in every language, and asked for the readable text, whether the subject is
+large and plain, and whether anything gives it away. The decision is made on
+this side, in `decide`: a picture is refused on the model's own verdict *and*
+on its transcript naming an answer — folded and matched on word boundaries,
+so "Up" is not found in "level up" — because a model asked "does this give it
+away?" is lenient about a title it has just read. An SVG cannot be shown to
+it and is read instead, its `<text>` checked the same way. The check is a
+guard, not a dependency: the endpoint is experimental, so a check that cannot
+be made — the model gone, a reply that is not JSON — lets the picture through
+*unverified* with a line in the log, and `DEEPSEEK_VISION_MODEL=` (empty)
+turns it off on purpose. The rules that make a round good have not moved into
+the judge; the prompt still says a game is a mid-game screenshot and never
+its cover, a film is a frame and never its poster, a logo is the symbol
+alone — the judge is what makes those rules cost something when they are
+broken.
+
+Image rounds still return up to five candidate URLs, best first, and the
+first that downloads as an actual image *and passes the judge* wins
+(`candidates.ts`). URLs the lookup showed go first, in the model's order, and
+any the model wrote itself go last rather than being dropped — the rule is
+"copy from the results", but a URL that turns out to exist is still a
+picture. Every refusal is kept with its reason, because the retry note has to
+say what was wrong with *each*: pictures that were looked at and refused are
+listed with why, so the second attempt picks a different picture rather than
+the same poster; URLs that never downloaded at all get the lookup run again
+on this side and the real URLs quoted into the note, so the retry works even
+when the model skipped the tool. Lyrics rounds involve no URLs and no lookup:
+a paraphrase is written from what the model already knows.
 
 **Lyrics are never reproduced.** The prompt asks for a 3–5 line paraphrase — the
 same imagery, person and running order, none of the actual words — and the UI
@@ -505,6 +564,7 @@ exports does not reach a task unless `turbo.json` names it. `PORT`,
 `CORS_ORIGINS`, `DATABASE_URL`, the four `S3_*` variables, `PUBLIC_BASE_URL`
 and `ADMIN_PASSWORD` are listed under `passThroughEnv` on `dev` and `start`,
 and `DEEPSEEK_API_KEY`, `DEEPSEEK_MODEL`, `DEEPSEEK_REASONING_EFFORT`,
+`DEEPSEEK_VISION_MODEL`, `SERPER_API_KEY`,
 `DATABASE_URL` and the same `S3_*` on `fill` — passed through
 rather than hashed, because they are runtime configuration and some of them
 are secrets. A new runtime variable has to be added there or it will silently
@@ -582,6 +642,19 @@ addressing means two rounds with the same bytes share one object.
 **Deleting a round** takes its texts by cascade and its picture by the same
 rule. The bucket's housekeeping is logged rather than shown when it fails:
 the round was already saved or already gone, and that is the news.
+
+**Several rounds go the same way, from the list.** Every row on `/rounds`
+carries a checkbox and the table is a form around them: tick what should
+go — or the header's box for the whole page — and the same two clicks the
+single round's delete takes remove them in one call. `deleteMany` is the
+repository's, one transaction for however many were ticked, and it hands
+back what it actually removed, so a round somebody else deleted in the
+meantime is a number in the notice rather than a failure; the pictures are
+tidied once each afterwards, because two of the ticked rounds may have
+shown the same one. The selection is the browser's — native checkboxes
+named `id`, the rows still rendered on the server — and the one island
+(`round-selection.tsx`) keeps only how many are ticked, counted off the
+form on every change, never a second list of ids.
 
 **The bank is loaded, not bundled.** `@guessly/bank` finds its migrations
 relative to its own file, and a copy of it inside a Next chunk would look for
@@ -1004,24 +1077,33 @@ answer to an abandoned round is refused rather than guarded against.
 fixture and a stub are interchangeable. The socket tests drive a stub; the
 fill service's `content/` is tested through `parseSubmission`, which is where
 "the model said something strange" has to come back as a rejection rather
-than a throw, and through `wikimedia.ts`'s own parsing — a real API payload
-read into candidates, which is where an article's sister-project logos, its
-audio file and its 20px interface icons have to stop being offered as
-pictures of the subject. Both are pure functions of a payload, so neither
-test touches the network. The bank is tested from all three of its ends, each in its own
+than a throw, and through each provider's own parsing — a real API payload
+read into candidates, which is where an article's sister-project logos and
+20px interface icons (`wikimedia.ts`), a web result that is a thumbnail or
+plain http (`serper.ts`) and a store entry that is the soundtrack rather
+than the game (`steam.ts`) have to stop being offered as pictures of the
+subject. `search.ts`'s merge, `vision.ts`'s decision — the transcript
+overruling the model's own verdict — and `candidates.ts`'s known-first order
+and reasons-kept loop are argued the same way, against stub providers and a
+stub judge. All of them are pure functions of a payload, so none of the
+tests touch the network; the one exception is the Serper provider's account
+bench, which is tested against a stubbed `fetch` because an hour's rest
+after a refusal is the behaviour and not the parsing. The bank is tested from all three of its ends, each in its own
 package: `packages/bank`'s `postgres.test.ts` runs the real repository — the
 same Drizzle queries and migrations as production — against PGlite, Postgres
 compiled to WASM rather than an imitation of it, booted once per process and
 wiped clean for every test, and `admin.test.ts` runs the admin's half of it
 the same way — listing and searching, the edit that may not make a duplicate
-or leave a round with no language, the deletion that hands back what it
-removed, and the picture two rounds share; the game's `bank/source.test.ts`
+or leave a round with no language, the deletions — one, or several in one
+transaction — that hand back what they removed, and the picture two rounds
+share; the game's `bank/source.test.ts`
 drives the consuming side —
 draws, cross-language aliases, and the misses that fail a round — against it;
 and `tools/fill`'s `fill.test.ts` drives the producing side — thinnest shelf
 first, exclusion lists, benching and backoff — with a stub generator and a
 fake image store. The admin's own tests are the pure parts of it: `form.ts`,
-where "would the bank take this round?" is argued sentence by sentence,
+where "would the bank take this round?" is argued sentence by sentence and
+the list's checkboxes are read back into ids,
 `query.ts`, where the URL round-trips, and `session.ts`, where a moved
 expiry and a changed password are both refused.
 

@@ -46,10 +46,14 @@ pnpm dev
 The game server never calls the AI — it deals rounds out of the bank. Filling
 the bank is the fill service's job: `pnpm fill` generates rounds in an endless
 loop (thinnest topic first, every language at once) until you stop it with
-Ctrl+C, and it needs **`ANTHROPIC_API_KEY`** in `tools/fill/.env` (a key in
-`apps/game/.env` still works as a fallback). `ANTHROPIC_MODEL` is optional and
-defaults to `claude-opus-5`. A freshly cloned repo has an empty bank, so run
-`pnpm fill` for a while before the first game.
+Ctrl+C, and it needs **`DEEPSEEK_API_KEY`** in `tools/fill/.env` (a key in
+`apps/game/.env` still works as a fallback). `DEEPSEEK_MODEL` is optional and
+defaults to `deepseek-v4-pro`; `deepseek-v4-flash` is the cheaper option, and
+the other optional knobs are listed in `tools/fill/.env.example`. A freshly
+cloned repo has an empty bank, so run `pnpm fill` for a while before the first
+game. `pnpm fill -- --topic flags` confines a run to one topic — repeat the
+flag, or comma-separate the ids, for several — which is how you top up the
+shelf a lobby just failed on without paying for the rest first.
 
 `pnpm dev` runs the web app on <http://localhost:3000>, the game server on
 <http://localhost:3001>, the admin on <http://localhost:3002>, and
@@ -71,6 +75,7 @@ inputs have not changed.
 |---|---|
 | `pnpm dev` | Web, game server, admin and shared-package watchers together |
 | `pnpm fill` | Stocks the round bank with AI-generated rounds until Ctrl+C |
+| `pnpm fill -- --topic <id>` | The same, for the topics named only |
 | `pnpm migrate:images` | One-way move of any on-disk pictures into the bucket |
 | `pnpm build` | Builds the shared packages, then everything on top |
 | `pnpm start` | Runs the production builds |

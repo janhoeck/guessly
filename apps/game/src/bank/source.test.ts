@@ -223,6 +223,7 @@ describe("a miss", () => {
       get: onFire,
       update: onFire,
       delete: onFire,
+      deleteMany: onFire,
       imageReferences: onFire,
       stock: onFire,
       close: async () => {},

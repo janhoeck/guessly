@@ -3,6 +3,9 @@ import Link from "next/link"
 import { LANGUAGES, isTopicId, topicById } from "@guessly/protocol"
 import type { BankedRoundRecord } from "@guessly/bank"
 
+import type { DeleteManyState } from "@/app/(admin)/rounds/actions"
+import { RoundCheckbox } from "@/components/rounds/round-checkbox"
+import { RoundSelection, SelectAllRounds } from "@/components/rounds/round-selection"
 import { RoundThumb } from "@/components/rounds/round-thumb"
 import { Badge } from "@guessly/ui/components/ui/badge"
 import { ROUNDS_PER_PAGE, isFiltered, roundsHref, type RoundQuery } from "@/lib/query"
@@ -12,15 +15,22 @@ import { ROUNDS_PER_PAGE, isFiltered, roundsHref, type RoundQuery } from "@/lib/
  * one: an empty bank, a filter nothing matches, and a page past the end.
  * They read very differently to an operator and none is allowed to render as
  * another.
+ *
+ * The table is a form — see `RoundSelection` — so that several rounds can be
+ * taken off the shelf in one go. The rows are still rendered here, on the
+ * server; the checkbox on each is the browser's, and only the count of
+ * them and the button they feed need a script.
  */
 function RoundList({
   query,
   rounds,
   total,
+  action,
 }: {
   query: RoundQuery
   rounds: BankedRoundRecord[]
   total: number
+  action: (previous: DeleteManyState, form: FormData) => Promise<DeleteManyState>
 }) {
   if (total === 0) {
     return isFiltered(query.filter) ? (
@@ -58,15 +68,14 @@ function RoundList({
   const to = from + rounds.length - 1
 
   return (
-    <div className="flex flex-col gap-3">
-      <p className="text-xs tracking-[0.2em] text-muted-foreground uppercase">
-        {from}–{to} of {total}
-      </p>
-
+    <RoundSelection action={action} total={rounds.length} range={`${from}–${to} of ${total}`}>
       <div className="overflow-x-auto rounded-xl bg-card ring-1 ring-border/60">
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-xs tracking-[0.2em] text-muted-foreground uppercase">
+              <th scope="col" className="w-10 py-3 pr-1 pl-4">
+                <SelectAllRounds />
+              </th>
               <th scope="col" className="px-4 py-3 font-medium">
                 Round
               </th>
@@ -90,7 +99,7 @@ function RoundList({
           </tbody>
         </table>
       </div>
-    </div>
+    </RoundSelection>
   )
 }
 
@@ -98,8 +107,11 @@ function RoundRow({ round }: { round: BankedRoundRecord }) {
   const topic = isTopicId(round.topic) ? topicById(round.topic) : null
 
   return (
-    <tr className="transition-colors hover:bg-accent/40">
-      <th scope="row" className="px-4 py-2.5 text-left font-normal">
+    <tr className="transition-colors hover:bg-accent/40 has-[input:checked]:bg-accent/60">
+      <td className="w-10 py-2.5 pr-1 pl-4">
+        <RoundCheckbox name="id" value={round.id} aria-label={`Select ${round.subject}`} />
+      </td>
+      <th scope="row" className="max-w-96 px-4 py-2.5 text-left font-normal">
         <Link
           href={`/rounds/${round.id}`}
           className="flex min-w-0 items-center gap-3 rounded-sm outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"

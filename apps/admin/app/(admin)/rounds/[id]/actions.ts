@@ -2,11 +2,12 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import type { ImageStore, RoundRepository, RoundUpdateResult } from "@guessly/bank";
+import type { RoundUpdateResult } from "@guessly/bank";
 import { isTopicId, languageById, topicById } from "@guessly/protocol";
 import { requireAdmin } from "@/lib/auth";
 import { getBank } from "@/lib/bank";
 import { parseRoundForm, parseSourceUrl } from "@/lib/form";
+import { tidyImage } from "@/lib/tidy-image";
 
 /**
  * The three things an operator can do to a round, each a server action.
@@ -52,25 +53,6 @@ function freshen(id: number): void {
   revalidatePath("/");
   revalidatePath("/rounds");
   revalidatePath(`/rounds/${id}`);
-}
-
-/**
- * The old picture goes when nothing else shows it. Housekeeping rather
- * than the operation: a bucket that would not let go is logged, not shown,
- * because the round was already saved or already gone and that is the news.
- */
-async function tidyImage(
-  repository: RoundRepository,
-  images: ImageStore,
-  previous: string | null,
-  keep: string | null,
-): Promise<void> {
-  if (previous === null || previous === keep) return;
-  try {
-    if ((await repository.imageReferences(previous)) === 0) await images.delete(previous);
-  } catch (cause) {
-    console.error(`[admin] could not remove ${previous} from the bucket`, cause);
-  }
 }
 
 export async function updateRound(id: number, _previous: SaveState, form: FormData): Promise<SaveState> {

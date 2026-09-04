@@ -50,7 +50,7 @@ export const SUBMIT_ROUND_INPUT_SCHEMA = {
       type: "array",
       items: { type: "string" },
       description:
-        "Image rounds only. Three to five direct https URLs to an image file, best first, each copied verbatim from a search_images result — never a file name written from memory. Empty array on a lyrics round.",
+        "Image rounds only. Three to five direct https URLs to an image file, best first, each copied verbatim from a search_images result — the web, the Steam store, Wikipedia or Commons — never a URL written from memory. Empty array on a lyrics round.",
     },
     lyrics_snippet: {
       type: "string",

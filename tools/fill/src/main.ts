@@ -1,7 +1,13 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { createPostgresRoundRepository, createS3ImageStore, RoundSourceError } from "@guessly/bank";
-import { loadEnvFile, loadFillConfig } from "./config.js";
+import { ALL_TOPIC_IDS } from "@guessly/protocol";
+import { loadEnvFile, loadFillConfig, parseFillArgs } from "./config.js";
 import { createDeepSeekRoundGenerator } from "./content/deepseek.js";
+import type { ImageProvider } from "./content/search.js";
+import { createSerperProvider } from "./content/serper.js";
+import { createSteamProvider } from "./content/steam.js";
+import { acceptAll, createDeepSeekImageJudge } from "./content/vision.js";
+import { createCommonsProvider, createWikipediaProvider } from "./content/wikimedia.js";
 import { createBankFiller, type Shelf } from "./fill.js";
 
 /**
@@ -18,11 +24,18 @@ import { createBankFiller, type Shelf } from "./fill.js";
  * is the operator's foot on the pedal — start it to fill, stop it to stop
  * paying. What that costs in supervision it pays back in visibility: every
  * generation is a line here, not a surprise in a server log.
+ *
+ * `pnpm fill -- --topic <id>` confines a run to one shelf — or a few: repeat
+ * the flag, or separate the ids with commas. Same loop, same gauge, same
+ * benching, over a shorter list, for topping up the topic a lobby just failed
+ * on or stocking a new one without paying for the rest first.
  */
 
 /** Print the whole stockroom every so often, so a long run stays legible. */
 const SHELF_REPORT_EVERY = 10;
 
+// A bad argument is refused before anything is opened or paid for.
+const args = parseFillArgs(process.argv.slice(2));
 loadEnvFile();
 const config = loadFillConfig();
 
@@ -31,12 +44,36 @@ const images = createS3ImageStore(config.s3);
 await repository.init();
 await images.init();
 
+// Where pictures come from, in the order the log's tally reads: Steam leads
+// a games round, the web is there when its key is, and the open archives
+// are always there. See content/search.ts for why they are merged.
+const providers: ImageProvider[] = [
+  createSteamProvider(),
+  ...(config.serperApiKey ? [createSerperProvider(config.serperApiKey)] : []),
+  createWikipediaProvider(),
+  createCommonsProvider(),
+];
+const judge = config.deepseekVisionModel
+  ? createDeepSeekImageJudge({ apiKey: config.deepseekApiKey, model: config.deepseekVisionModel })
+  : acceptAll;
+
 const generator = createDeepSeekRoundGenerator({
   apiKey: config.deepseekApiKey,
   model: config.deepseekModel,
   reasoningEffort: config.deepseekReasoningEffort,
+  providers,
+  judge,
 });
-const filler = createBankFiller({ repository, images, generator });
+const filler = createBankFiller({
+  repository,
+  images,
+  generator,
+  topics: args.topics ?? ALL_TOPIC_IDS,
+});
+
+// What this run is confined to, for the log: the whole stockroom unless
+// `--topic` said otherwise.
+const scope = args.topics ? `only ${args.topics.join(", ")}` : "every topic";
 
 const printShelves = (shelves: Shelf[]): void => {
   console.log("[fill] the shelves:");
@@ -64,7 +101,16 @@ process.on("SIGTERM", () => stop("SIGTERM"));
 
 printShelves(await filler.shelves());
 console.log(
-  `[fill] filling with ${config.deepseekModel} (${config.deepseekReasoningEffort} reasoning effort), images into ${config.s3.bucket} at ${config.s3.endpoint} — Ctrl+C to stop`,
+  `[fill] filling ${scope} with ${config.deepseekModel} (${config.deepseekReasoningEffort} reasoning effort), images into ${config.s3.bucket} at ${config.s3.endpoint} — Ctrl+C to stop`,
+);
+console.log(
+  `[fill] pictures from ${providers.map((provider) => provider.name).join(", ")}${
+    config.serperApiKey ? "" : " (web search off — set SERPER_API_KEY to turn it on)"
+  }; ${
+    config.deepseekVisionModel
+      ? `every download checked by ${config.deepseekVisionModel}`
+      : "downloads not checked by eye (DEEPSEEK_VISION_MODEL is empty)"
+  }`,
 );
 
 let banked = 0;
@@ -106,10 +152,14 @@ while (!controller.signal.aborted) {
       break;
     }
     case "resting": {
-      // Every topic is benched — a dead API, or a stockroom of dry topics.
-      // Sleep to the earliest bench instead of spinning on the counts.
+      // Every topic in the run is benched — a dead API, or a stockroom of
+      // dry topics. Sleep to the earliest bench instead of spinning on the
+      // counts.
       const wait = Math.max(outcome.until - Date.now(), 1_000);
-      console.log(`[fill] every topic is resting; sleeping ${Math.round(wait / 1000)}s`);
+      const resting = args.topics
+        ? `${args.topics.join(", ")} ${args.topics.length === 1 ? "is" : "are all"} resting`
+        : "every topic is resting";
+      console.log(`[fill] ${resting}; sleeping ${Math.round(wait / 1000)}s`);
       try {
         await sleep(wait, undefined, { signal: controller.signal });
       } catch {

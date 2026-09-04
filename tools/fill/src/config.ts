@@ -1,6 +1,8 @@
 import { fileURLToPath } from "node:url";
 import { readS3Config, type S3ImageStoreConfig } from "@guessly/bank";
+import { ALL_TOPIC_IDS, isTopicId, type TopicId } from "@guessly/protocol";
 import { REASONING_EFFORTS, type ReasoningEffort } from "./content/deepseek.js";
+import { DEFAULT_VISION_MODEL } from "./content/vision.js";
 
 /**
  * Read env files into `process.env`, if there are any: the tool's own
@@ -42,6 +44,14 @@ export interface FillConfig {
   databaseUrl: string;
   /** The bucket the bank's pictures go in: the one the game server reads. */
   s3: S3ImageStoreConfig;
+  /**
+   * The whole-web image search (serper.dev), or null when it is not
+   * configured — in which case the lookup is Wikimedia and Steam alone,
+   * which is what it was before.
+   */
+  serperApiKey: string | null;
+  /** The vision model every downloaded picture is shown to. Null switches the check off. */
+  deepseekVisionModel: string | null;
 }
 
 /**
@@ -102,5 +112,81 @@ export function loadFillConfig(env: NodeJS.ProcessEnv = process.env): FillConfig
   // enough locally.
   const s3 = readS3Config(env, "tools/fill");
 
-  return { deepseekApiKey, deepseekModel, deepseekReasoningEffort, databaseUrl, s3 };
+  // Optional: the fill tool without it is the fill tool as it was, and the
+  // start line says the web search is off.
+  const serperApiKey = (env.SERPER_API_KEY ?? "").trim() || null;
+
+  // Unset means the default; set and empty means off. The difference is
+  // deliberate: an operator who wants no check says so in the file, and a
+  // file that never mentions it gets the check.
+  const visionRaw = env.DEEPSEEK_VISION_MODEL;
+  const deepseekVisionModel =
+    visionRaw === undefined ? DEFAULT_VISION_MODEL : visionRaw.trim() || null;
+
+  return {
+    deepseekApiKey,
+    deepseekModel,
+    deepseekReasoningEffort,
+    databaseUrl,
+    s3,
+    serperApiKey,
+    deepseekVisionModel,
+  };
+}
+
+/** What the command line asked for, on top of what the environment holds. */
+export interface FillArgs {
+  /**
+   * The shelves this run is confined to, in catalogue order — or null when
+   * nothing was asked and the whole stockroom is in the rotation.
+   */
+  topics: readonly TopicId[] | null;
+}
+
+const USAGE = "usage: pnpm fill [-- --topic <id>[,<id>...] ...]";
+
+/**
+ * Read the command line: `pnpm fill -- --topic flags` fills one shelf and
+ * leaves the rest alone. The loop, the gauge and the benching are the same,
+ * over a shorter list — so the tool can top up the topic a lobby just failed
+ * on without paying for eleven others first, or stock a new topic on its own.
+ * `--topic` may be repeated, or given a comma-separated list; the result is
+ * deduplicated and put in catalogue order, the way a lobby's selection is.
+ *
+ * `--` is tolerated anywhere, because pnpm and turbo both use it as their
+ * separator and whichever of them forwards it, it means nothing here.
+ * Anything else the tool does not know is refused rather than ignored: a
+ * typo that quietly filled every shelf would be an expensive way to find it.
+ */
+export function parseFillArgs(argv: readonly string[]): FillArgs {
+  const picked = new Set<TopicId>();
+  let asked = false;
+  const rest = [...argv];
+  while (rest.length > 0) {
+    const arg = rest.shift()!;
+    if (arg === "--") continue;
+
+    let value: string | undefined;
+    if (arg === "--topic") value = rest.shift();
+    else if (arg.startsWith("--topic=")) value = arg.slice("--topic=".length);
+    else throw new Error(`Unknown argument ${JSON.stringify(arg)}. ${USAGE}`);
+
+    const ids = (value ?? "")
+      .split(",")
+      .map((id) => id.trim())
+      .filter((id) => id !== "");
+    if (ids.length === 0 || value?.startsWith("-")) {
+      throw new Error(`--topic needs a topic id — one of ${ALL_TOPIC_IDS.join(", ")}. ${USAGE}`);
+    }
+    for (const id of ids) {
+      if (!isTopicId(id)) {
+        throw new Error(
+          `Unknown topic ${JSON.stringify(id)} — the catalogue has ${ALL_TOPIC_IDS.join(", ")}.`,
+        );
+      }
+      picked.add(id);
+    }
+    asked = true;
+  }
+  return { topics: asked ? ALL_TOPIC_IDS.filter((id) => picked.has(id)) : null };
 }

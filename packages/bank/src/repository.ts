@@ -204,6 +204,13 @@ export interface RoundRepository {
    */
   delete(id: number): Promise<BankedRoundRecord | null>;
   /**
+   * `delete`, for several at once: every round named that is still there
+   * goes in one transaction, and what was removed comes back — newest first
+   * — for the same tidying. A round already gone is simply not in the list
+   * rather than a reason to stop, and an empty list removes nothing.
+   */
+  deleteMany(ids: readonly number[]): Promise<BankedRoundRecord[]>;
+  /**
    * How many rounds show this picture. Content addressing means two rounds
    * with the same bytes share one object, so a round's deletion may only
    * take the picture with it when this says nobody else is looking at it.

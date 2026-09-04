@@ -1,32 +1,27 @@
 import { USER_AGENT } from "./download.js";
+import type { FoundImage, ImageProvider, ImageQuery } from "./search.js";
 
 /**
- * Finding pictures that exist.
+ * The open archives: what the subject's English Wikipedia article shows, and
+ * what Commons holds under its name.
  *
- * The generator cannot browse, and for a long time that was taken to mean the
- * file names had to come out of its memory — the prompt steered it toward
- * canonical, rule-based names and the download check caught the rest. That
- * works exactly as far as the rules go. `Flag of France.svg` is a rule;
- * `Minecraft screenshot.png` is a wish, and the file the article actually uses
- * is `Screenshot from the Minecraft Nether.png`, which nothing but a lookup
- * was ever going to produce. Whole topics were unfillable for that reason
- * alone: three attempts, five invented URLs each, ten minutes, and a bench.
+ * MediaWiki's API answers both, needs no key, and is the same host the bytes
+ * come from — which is why this was the first lookup the generator got and
+ * why it is the one that still works when nothing else is configured. The
+ * two are two providers rather than one because they fail differently and
+ * are worth different things:
  *
- * MediaWiki's API answers the lookup, needs no key, and is the same host the
- * bytes come from — so the model gets a search tool after all. It does not
- * *choose* the picture: it hands back real titles with their real sizes and
- * captions, and the model picks the one that shows the subject without
- * spelling it out. That split is the point. A tool that picked would have to
- * know that a wordmark ruins a logo round; a model that invents file names
- * cannot be told anything that makes it stop.
+ * - **The article's images** are guaranteed to be *about* the subject, so
+ *   the hit rate is high and the noise is wiki furniture, which is filtered
+ *   by name and by size. `generator=images` has no ranking to give, so naming
+ *   the subject is used as the one relevance signal available without another
+ *   request.
+ * - **The Commons search** is wider and ranked by relevance, and is the only
+ *   archive at all for a subject with no article of its own — at the price
+ *   that a text search for "Mercury" will happily return a thermometer.
  *
- * Two questions are asked at once, because they fail differently:
- *
- * - **What is on the subject's English Wikipedia article** — everything there
- *   is about the subject, so the hit rate is high and the noise is wiki
- *   furniture, which is filtered by name and by size.
- * - **What Commons holds under that name** — wider, and the only source for
- *   subjects with no article of their own.
+ * Both hand back real titles with their real sizes and captions; the model
+ * picks the one that shows the subject without spelling it out.
  */
 
 const ENDPOINTS = {
@@ -43,14 +38,17 @@ const FILE_PATH_BASE: Record<WikiId, string> = {
   en: "https://en.wikipedia.org/wiki/Special:FilePath/",
 };
 
-/** The render width every candidate URL asks for. */
+const SOURCE: Record<WikiId, FoundImage["source"]> = { commons: "commons", en: "wikipedia" };
+
+/**
+ * The render width every candidate URL asks for. It is also what turns an SVG
+ * — a flag, a logo — into a PNG on the way out, which is the only form the
+ * vision check can read.
+ */
 const RENDER_WIDTH = 1200;
 
 /** A lookup is a formality next to a ten-minute generation; it does not get to hang. */
 const API_TIMEOUT_MS = 10_000;
-
-/** How many files come back from one search: enough to choose from, short enough to read. */
-const MAX_RESULTS = 12;
 
 const COMMONS_SEARCH_LIMIT = 20;
 const ARTICLE_IMAGE_LIMIT = 50;
@@ -84,28 +82,12 @@ const CHROME = new RegExp(
     "^masked man\\b",
     "^star (full|half|empty)",
     "^(cscr|searchtool|merge-arrow|arrow blue)",
+    // Icon sets an infobox borrows a glyph from: a phone, a duplicate sign.
+    "^noun[- ]",
+    "^(ionicons|octicons|font ?awesome|material design|feather|tabler)\\b",
   ].join("|"),
   "i",
 );
-
-export interface FoundImage {
-  /** The exact file title, without the `File:` prefix. */
-  name: string;
-  /** Which wiki's `Special:FilePath` resolves it. */
-  wiki: WikiId;
-  /** Ready to submit, verbatim. */
-  url: string;
-  mime: string;
-  width: number;
-  height: number;
-  /** The file's caption, trimmed to a line. Null when it has none. */
-  description: string | null;
-}
-
-/** Search results, or the sentence the model is told instead. */
-export type ImageSearchResult =
-  | { ok: true; images: FoundImage[] }
-  | { ok: false; reason: string };
 
 const fileUrl = (wiki: WikiId, name: string): string =>
   `${FILE_PATH_BASE[wiki]}${encodeURIComponent(name)}?width=${RENDER_WIDTH}`;
@@ -176,13 +158,15 @@ export function parseImagePages(payload: unknown, wiki: WikiId): FoundImage[] {
     if (width < MIN_DIMENSION || height < MIN_DIMENSION) continue;
 
     out.push({
-      name,
-      wiki,
+      source: SOURCE[wiki],
+      label: name,
       url: fileUrl(wiki, name),
       mime: info.mime,
       width,
       height,
       description: plainDescription(info.extmetadata?.ImageDescription?.value),
+      page: null,
+      site: null,
     });
   }
   return out;
@@ -235,123 +219,59 @@ function preferNamed(images: FoundImage[], query: string): FoundImage[] {
   const words = queryWords(query);
   if (words.length === 0) return images;
   const mentions = (image: FoundImage): number => {
-    const haystack = `${image.name} ${image.description ?? ""}`.toLowerCase();
+    const haystack = `${image.label} ${image.description ?? ""}`.toLowerCase();
     return words.some((word) => haystack.includes(word)) ? 0 : 1;
   };
   return [...images].sort((a, b) => mentions(a) - mentions(b));
 }
 
-/**
- * Everything both wikis have for one subject, the two sources interleaved.
- *
- * They are worth different things and both are worth something. The article's
- * images are guaranteed to be *about* the subject — a Commons text search for
- * "Mercury" will happily return a thermometer — while the search is ranked by
- * relevance and is the only source at all for a subject with no article of its
- * own. Filling from the article first turned out to spend the whole result list
- * on one of them: twelve incidental photographs off the "Among Us" article, and
- * the cosplay shot Commons had ranked first never shown. So they alternate, and
- * whichever runs out first leaves its slots to the other.
- *
- * Failure is a sentence rather than a throw: a lookup that did not answer is
- * the model's to route around, with a different query or a different subject,
- * and killing the generation over it would trade a slightly worse round for no
- * round.
- */
-export async function searchImages(
-  query: string,
-  signal: AbortSignal,
-): Promise<ImageSearchResult> {
-  const subject = query.trim();
-  if (!subject) return { ok: false, reason: "The query was empty." };
-
-  const [article, commons] = await Promise.all([
-    callApi(
-      "en",
-      {
-        titles: subject,
-        redirects: "1",
-        generator: "images",
-        gimlimit: String(ARTICLE_IMAGE_LIMIT),
-      },
-      signal,
-    ),
-    callApi(
-      "commons",
-      {
-        generator: "search",
-        gsrsearch: subject,
-        gsrnamespace: "6",
-        gsrlimit: String(COMMONS_SEARCH_LIMIT),
-      },
-      signal,
-    ),
-  ]);
-
-  if (article === null && commons === null) {
-    return { ok: false, reason: "The image search could not be reached." };
-  }
-
+/** What the subject's English Wikipedia article shows. Asked by the subject's name alone: it is a title lookup. */
+export function createWikipediaProvider(): ImageProvider {
   return {
-    ok: true,
-    images: interleave(
-      preferNamed(parseImagePages(article, "en"), subject),
-      parseImagePages(commons, "commons"),
-      MAX_RESULTS,
-    ),
+    name: "wikipedia",
+    placement: "lane",
+    appliesTo: () => true,
+    async search(query: ImageQuery, signal) {
+      const payload = await callApi(
+        "en",
+        {
+          titles: query.subject,
+          redirects: "1",
+          generator: "images",
+          gimlimit: String(ARTICLE_IMAGE_LIMIT),
+        },
+        signal,
+      );
+      if (payload === null) return null;
+      return preferNamed(parseImagePages(payload, "en"), query.subject);
+    },
   };
 }
 
 /**
- * One from each in turn, deduplicated by file name — a file used on the article
- * *and* found by the search is one file, offered through whichever came round
- * first. Exported for its own test: the alternation is the whole point of it.
+ * What Commons holds under the subject's name. The subject alone, not the
+ * kind of picture asked for: Commons' full-text search is a search of file
+ * pages, and "Portal 2 gameplay screenshot" matched nothing where "Portal 2"
+ * matched plenty. `looking_for` is the web search's to act on.
  */
-export function interleave(
-  first: readonly FoundImage[],
-  second: readonly FoundImage[],
-  limit: number,
-): FoundImage[] {
-  const seen = new Set<string>();
-  const out: FoundImage[] = [];
-
-  const take = (image: FoundImage | undefined): void => {
-    if (!image || out.length >= limit) return;
-    const key = image.name.toLowerCase();
-    if (seen.has(key)) return;
-    seen.add(key);
-    out.push(image);
+export function createCommonsProvider(): ImageProvider {
+  return {
+    name: "commons",
+    placement: "lane",
+    appliesTo: () => true,
+    async search(query: ImageQuery, signal) {
+      const payload = await callApi(
+        "commons",
+        {
+          generator: "search",
+          gsrsearch: query.subject,
+          gsrnamespace: "6",
+          gsrlimit: String(COMMONS_SEARCH_LIMIT),
+        },
+        signal,
+      );
+      if (payload === null) return null;
+      return parseImagePages(payload, "commons");
+    },
   };
-
-  for (let index = 0; out.length < limit && index < Math.max(first.length, second.length); index += 1) {
-    take(first[index]);
-    take(second[index]);
-  }
-  return out;
-}
-
-/**
- * The results as the model reads them: one line per file, the URL last so it is
- * the thing to copy. The dimensions are there because they are how a photograph
- * is told from a thumbnail, and the caption because it is how a screenshot is
- * told from a logo without opening either.
- */
-export function formatImageResults(result: ImageSearchResult, query: string): string {
-  if (!result.ok) {
-    return `${result.reason} Try a different query, or a subject you can source another way.`;
-  }
-  if (result.images.length === 0) {
-    return `No image files found for "${query}". The open archives may hold nothing for it — try the subject's plain English name, or pick a different subject.`;
-  }
-
-  const lines = result.images.map((image) => {
-    const caption = image.description ? ` — ${image.description}` : "";
-    return `- ${image.name} (${image.width}×${image.height})${caption}\n  ${image.url}`;
-  });
-
-  return [
-    `${result.images.length} file(s) exist for "${query}". These URLs are real — copy the ones you pick into image_urls verbatim, best first.`,
-    ...lines,
-    "Pick pictures that show the subject large and plain and do not spell its name out. If none of them do, search a different subject.",
-  ].join("\n");
 }

@@ -14,12 +14,50 @@ import { MAX_IMAGE_BYTES, sniffImage } from "@guessly/bank";
  * The verification itself — `sniffImage`, and the size it is capped at — lives
  * in the bank, because the admin's upload has to pass the same check: what the
  * bank will hold is the bank's rule, not the downloader's.
+ *
+ * Since the search reaches past Wikimedia, the download has to as well, and
+ * the web is less polite than an archive: a CDN that serves a page's pictures
+ * often refuses a request that does not look like that page's browser asking.
+ * So the headers depend on the host — see `headersFor`.
  */
 
-/** Wikimedia refuses anonymous user agents outright, and it is the best host we
- *  have — for its API in wikimedia.ts as much as for the bytes here. */
+/** Wikimedia refuses anonymous user agents outright, and asks for a descriptive
+ *  one — for its API in wikimedia.ts as much as for the bytes here. */
 export const USER_AGENT =
   "Guessly/0.1 (multiplayer guessing game; +https://github.com/guessly) node-fetch";
+
+/**
+ * What everywhere else gets. A stock browser string, because a hotlink check
+ * is a check on whether the request looks like a browser, and this download
+ * is doing exactly what a browser would: fetching a picture a page shows.
+ */
+const BROWSER_USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36";
+
+const WIKIMEDIA_HOST = /(^|\.)(wikimedia|wikipedia)\.org$/i;
+
+/**
+ * The request headers for one URL. Wikimedia gets the agent its policy asks
+ * for and no referer; every other host gets a browser's agent and, when the
+ * search said which page the picture was found on, that page as the referer.
+ * Exported for its own test: it is a rule, and a rule is argued in a test.
+ */
+export function headersFor(url: string, referer: string | null): Record<string, string> {
+  let host = "";
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    // Not a URL; the fetch will say so. Browser headers do no harm meanwhile.
+  }
+  if (WIKIMEDIA_HOST.test(host)) {
+    return { "user-agent": USER_AGENT, accept: "image/*" };
+  }
+  return {
+    "user-agent": BROWSER_USER_AGENT,
+    accept: "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+    ...(referer ? { referer } : {}),
+  };
+}
 
 export interface DownloadedImage {
   bytes: Buffer;
@@ -30,13 +68,24 @@ export interface DownloadedImage {
   sourceUrl: string;
 }
 
+export interface DownloadOptions {
+  /** The page the picture was found on, if the search said. */
+  referer?: string | null;
+  /** A host that cannot deliver the whole file in this long will not do better later. */
+  timeoutMs: number;
+}
+
 /** One download: the whole file, capped, sniffed. Null on anything less. */
-async function downloadImage(url: string, signal: AbortSignal): Promise<DownloadedImage | null> {
+export async function downloadImage(
+  url: string,
+  signal: AbortSignal,
+  options: DownloadOptions,
+): Promise<DownloadedImage | null> {
   try {
     const response = await fetch(url, {
       redirect: "follow",
-      headers: { "user-agent": USER_AGENT, accept: "image/*" },
-      signal,
+      headers: headersFor(url, options.referer ?? null),
+      signal: AbortSignal.any([signal, AbortSignal.timeout(options.timeoutMs)]),
     });
     if (!response.ok || response.body === null) return null;
 
@@ -56,25 +105,4 @@ async function downloadImage(url: string, signal: AbortSignal): Promise<Download
   } catch {
     return null;
   }
-}
-
-/**
- * Candidates in the model's own order — it was asked for best first — and the
- * first that turns out to actually be an image wins. Sequential, unlike the
- * one-byte probes this replaced: these are whole files, and a dead URL fails
- * fast anyway — only a *hanging* host costs its timeout, and that is what the
- * per-URL budget is for.
- */
-export async function firstDownloadableImage(
-  urls: readonly string[],
-  signal: AbortSignal,
-  perUrlTimeoutMs: number,
-): Promise<DownloadedImage | null> {
-  for (const url of urls) {
-    if (signal.aborted) return null;
-    const attempt = AbortSignal.any([signal, AbortSignal.timeout(perUrlTimeoutMs)]);
-    const image = await downloadImage(url, attempt);
-    if (image) return image;
-  }
-  return null;
 }

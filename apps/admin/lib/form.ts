@@ -189,3 +189,20 @@ export function parseSourceUrl(value: string): string | null | { error: string }
   }
   return url.toString();
 }
+
+/**
+ * The list's selection: every `id` the form carries that could be a
+ * round's, each once, in the order they were ticked. Anything that is not
+ * a positive integer is dropped rather than refused — a checkbox somebody
+ * tampered with is not worth a sentence, and an empty answer is the one
+ * the action already has a sentence for.
+ */
+export function parseSelectedIds(form: FormData): number[] {
+  const ids = new Set<number>();
+  for (const value of form.getAll("id")) {
+    if (typeof value !== "string") continue;
+    const id = Number(value);
+    if (Number.isSafeInteger(id) && id >= 1) ids.add(id);
+  }
+  return [...ids];
+}

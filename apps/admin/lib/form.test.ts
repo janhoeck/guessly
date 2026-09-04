@@ -6,6 +6,7 @@ import {
   QUESTION_MAX_LENGTH,
   SNIPPET_MAX_LINES,
   parseRoundForm,
+  parseSelectedIds,
   parseSourceUrl,
   splitAliases,
 } from "./form";
@@ -223,5 +224,18 @@ describe("parseSourceUrl", () => {
     );
     expect(parseSourceUrl("commons.wikimedia.org")).toMatchObject({ error: expect.any(String) });
     expect(parseSourceUrl("javascript:alert(1)")).toMatchObject({ error: expect.any(String) });
+  });
+});
+
+describe("parseSelectedIds", () => {
+  it("reads every ticked id once, in order, and nothing that could not be one", () => {
+    const form = new FormData();
+    for (const value of ["7", "3", "7", "", "x", "-1", "0", "2.5", "1e3"]) form.append("id", value);
+    form.append("other", "9");
+    expect(parseSelectedIds(form)).toEqual([7, 3, 1000]);
+  });
+
+  it("is empty when nothing is ticked", () => {
+    expect(parseSelectedIds(new FormData())).toEqual([]);
   });
 });

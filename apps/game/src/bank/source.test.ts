@@ -70,7 +70,7 @@ async function harness(...rounds: NewBankedRound[]) {
 describe("a stocked bank", () => {
   it("serves a banked round with the image from our own origin", async () => {
     const round = bankedImage("Bhutan");
-    const { source } = await harness(round);
+    const { source, repository } = await harness(round);
 
     const sourced = await source.build(request(), NEVER);
 
@@ -80,6 +80,9 @@ describe("a stocked bank", () => {
       question: "Which country's flag is this?",
       imageUrl: `http://game.test:3001/img/${round.imageFile}`,
     });
+    // The bank's own id rides along, so a vote on this round lands on this row.
+    const [banked] = (await repository.list({}, { offset: 0, limit: 1 })).rounds;
+    expect(sourced.id).toBe(banked?.id);
   });
 
   /** The whole payoff: the German lobby is dealt the round the English one paid for. */
@@ -218,6 +221,7 @@ describe("a miss", () => {
       count: onFire,
       answers: async () => [],
       aliases: async () => [],
+      recordVote: onFire,
       // The admin's half. The game never calls any of it, so it burns too.
       list: onFire,
       get: onFire,

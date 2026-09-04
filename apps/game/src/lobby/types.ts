@@ -8,6 +8,7 @@ import {
   type RoundKind,
   type RoundResult,
   type RoundState,
+  type RoundVote,
   type TopicId,
 } from "@guessly/protocol";
 
@@ -61,6 +62,18 @@ export interface RoundRecord {
    * actually opens. Null until `prepareNext` draws it.
    */
   nextTopic: TopicId | null;
+  /**
+   * The bank's id for what is on screen, so a vote on it can be filed against
+   * the right row. Null until the content lands, and null for good when it
+   * came from a source with no ledger.
+   */
+  bankId: number | null;
+  /**
+   * Who has judged this round, and how. Never on the wire — a vote is between
+   * the player and the operator, and the room is told nothing — so it is here
+   * for one reason only: one seat gets one vote.
+   */
+  votes: Map<string, RoundVote>;
 }
 
 export interface LobbyRecord {

@@ -1,11 +1,11 @@
 import { bigint, index, integer, jsonb, pgTable, primaryKey, text } from "drizzle-orm/pg-core";
 
 /**
- * The bank's two tables, as Drizzle sees them — the one schema both the
+ * The bank's three tables, as Drizzle sees them — the one schema both the
  * repository and `drizzle-kit generate` read, so the SQL migrations under
  * `drizzle/` can never drift away from the queries.
  *
- * Two tables, because a round is one subject and many languages: `rounds` is
+ * Two of them, because a round is one subject and many languages: `rounds` is
  * what the round *shows* and how often it has been dealt, `round_texts` is
  * what each language asks and accepts about it. A new language is then rows in
  * the second table — not a column, and not a second copy of every picture.
@@ -13,6 +13,13 @@ import { bigint, index, integer, jsonb, pgTable, primaryKey, text } from "drizzl
  * A lyrics round's paraphrase is on `rounds` beside the picture, and that is
  * the same distinction rather than an exception: it is written in the song's
  * own language, so every room reads the same lines.
+ *
+ * The third, `round_votes`, is what the players thought: one row per thumb,
+ * written by the game server and read by the admin. Rows rather than two
+ * counters on `rounds`, because a vote has a *when* and a *which language* —
+ * a round disliked only in German lobbies is a German question to fix, not a
+ * picture to replace — and because a table that only ever grows by insert
+ * needs no lock and can be aggregated any way the operator later wants.
  *
  * Timestamps are epoch milliseconds in a `bigint`, not `timestamptz`, because
  * every caller passes the injected clock's `now: number` — the same numbers
@@ -54,4 +61,21 @@ export const roundTexts = pgTable(
     // asks whether a topic already answers to a word.
     index("round_texts_answer").on(table.language, table.answerKey),
   ],
+);
+
+export const roundVotes = pgTable(
+  "round_votes",
+  {
+    id: integer("id").primaryKey().generatedByDefaultAsIdentity(),
+    roundId: integer("round_id")
+      .notNull()
+      .references(() => rounds.id, { onDelete: "cascade" }),
+    /** The lobby's language: the round as the voter read it. */
+    language: text("language").notNull(),
+    /** "up" or "down"; see `RoundVote` in the protocol. */
+    vote: text("vote").notNull(),
+    createdAt: bigint("created_at", { mode: "number" }).notNull(),
+  },
+  // Every read of votes is "for these rounds", so this is the whole access path.
+  (table) => [index("round_votes_round").on(table.roundId)],
 );

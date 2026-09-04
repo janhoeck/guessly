@@ -311,9 +311,10 @@ closes their account for that round and every seat gets one. `round:guess`
 quotes the round number back, so an answer typed as the clock ran out cannot be
 scored against the next round.
 
-**A miss is told to the guesser and to nobody else.** It is the only thing in
-this game that does not ride in the snapshot, which is what lets the field clear
-and shake without the room being shown who fumbled it. A *correct* answer is
+**A miss is told to the guesser and to nobody else.** It is one of two things
+in this game that do not ride in the snapshot — the other is a vote, see Rating
+a Round — which is what lets the field clear and shake without the room being
+shown who fumbled it. A *correct* answer is
 public the instant it is scored — a `RoundResult` carrying the seat, the elapsed
 time and the points — because watching somebody else's row settle at 1.4 seconds
 while you are still typing is the pressure the round is made of, and it gives
@@ -343,6 +344,50 @@ second edit is held back until eleven characters.
   to score. It does *not* end when the *first* player answers — but it does end
   when the *last* one does: once every connected player has it, the rest of the
   clock is a locked field and a bar emptying in front of people who are done.
+
+## Rating a Round
+
+Once the answer is up, every player may say whether that was a good one:
+thumbs up or thumbs down, beside the answer on the reveal. It is about the
+*round* — the picture, the paraphrase, the question — and not about whether
+the player got it, which is why it sits next to the answer rather than next to
+the score, and why it is asked of everybody rather than only of the people who
+missed.
+
+- **The window is the intermission.** `round:vote` quotes the round number
+  the way a guess does and is accepted only while the lobby is in
+  `intermission` on that round: before the reveal the player has not seen the
+  whole round, and after `advance` the round is not on screen at all. Five
+  seconds is short, and that is deliberate — a thumb is a reaction, and a
+  rating nobody has time to read is a rating nobody gives.
+- **One per seat, and the first one counts.** A second thumb is refused
+  (`ALREADY_VOTED`) rather than swapped, so the buttons lock on the first tap
+  with the chosen one lit. A control that could be toggled for five seconds
+  would spend them on the control. `components/game/vote-buttons.tsx` is the
+  island, keyed on the round number so the next reveal is a fresh pair, and
+  it lights nothing the server has not confirmed.
+- **The room hears nothing.** Like a miss, a vote is answered in the ack and
+  never rides in the snapshot: what a player thought of a round is between
+  them and the operator, and a tally on everybody's screen would turn a
+  rating into a verdict on whoever picked the topic.
+- **The bank keeps it.** `RoundRecord.bankId` is the bank's id for what is on
+  screen, carried in from `SourcedRound.id`; `store.vote` decides that the
+  thumb counts and hands back a `RoundVoteRecord` — round id, the lobby's
+  language, the vote, the server's clock — which the adapter files through
+  `RoundFeedback`, implemented in `bank/feedback.ts`: the write half of the
+  seam `bank/source.ts` is the read half of. The write is made *behind* the
+  ack: the player was told before the database was asked, and a bank that
+  cannot take the row is a line in the log rather than a round that stalls.
+  A round from a source with no ledger — a fixture in a test — is voted on
+  and filed nowhere.
+- **One row per thumb**, in `round_votes`, with the lobby's language and a
+  timestamp, cascading with the round. Rows rather than two counters on
+  `rounds`, because a round disliked only in German lobbies is a German
+  question to fix rather than a picture to replace, and because a table that
+  only ever grows by insert needs no lock. The admin reads the tally as
+  `BankedRoundRecord.votes` — counted in the database, one query per page like
+  the texts — though nothing in the admin *shows* it yet; that is the next
+  job.
 
 ## Winning
 
@@ -581,9 +626,10 @@ server's process and dies with it — deliberately, see Lobbies. The round bank
 persists: Postgres, through Drizzle, behind the `RoundRepository` interface
 in `packages/bank` — written async so what is behind it stays swappable for
 one new file rather than a change to any caller. Nothing outside
-`packages/bank` knows what is plugged in. Two tables: `rounds` is what was photographed and
+`packages/bank` knows what is plugged in. Three tables: `rounds` is what was photographed and
 how often it has been dealt, `round_texts` is what each language asks and
-accepts about it. The server, the fill service and the admin are three
+accepts about it, and `round_votes` is what the players thought of it — the
+one thing the game server writes back, see Rating a Round. The server, the fill service and the admin are three
 processes on the one database, so `insert` — and the admin's `update` —
 check and write under a transaction-scoped advisory lock on the topic:
 polite writers instead of surprised ones.
@@ -1002,6 +1048,7 @@ type Ack<T> =
 | `lobby:setLanguage` | `{ language }` — host only, while `lobby` or `finished` | `{}` |
 | `lobby:start` | — host only, while `lobby` or `finished`; from `finished` it is the rematch and resets every score | `{}` |
 | `round:guess` | `{ roundNumber, guess }` | `{ correct: false }` or `{ correct: true, points, elapsedMs }` |
+| `round:vote` | `{ roundNumber, vote }` — `vote` is `up` or `down`; while `intermission`, once per seat | `{}` |
 | `lobby:browse` | — | `{ lobbies }` — every lobby somebody is in |
 | `lobby:unbrowse` | — | `{}` |
 | `lobby:leave` | — | `{}` |
@@ -1023,8 +1070,9 @@ trusts.
 
 Round *lifecycle* — countdown, content, reveal, intermission — is a handful of
 broadcasts a round, so it rides in the snapshot like everything else.
-`round:guess` is the one exception: it is several a round per player, and its
-ack is the only place a *wrong* guess is ever reported.
+`round:guess` and `round:vote` are the exceptions: a guess is several a round
+per player, and its ack is the only place a *wrong* guess is ever reported; a
+vote's ack is the only place a vote is reported at all.
 
 **The server owns the clock.** It stamps when each guess *arrives*, and clients
 render their countdown from a server-sent deadline. Client timestamps are never
@@ -1033,7 +1081,7 @@ trusted — speed is the score here.
 **Errors:** `LOBBY_NOT_FOUND`, `LOBBY_FULL`, `GAME_IN_PROGRESS`, `NICKNAME_TAKEN`,
 `INVALID_NICKNAME`, `INVALID_TARGET_SCORE`, `INVALID_TOPICS`, `INVALID_LANGUAGE`,
 `NOT_HOST`, `NOT_ENOUGH_PLAYERS`, `ROUND_NOT_OPEN`, `ALREADY_ANSWERED`, `INVALID_GUESS`,
-`RATE_LIMITED`, `SERVER_ERROR`, and `RESUME_REJECTED` — on which the client
+`ALREADY_VOTED`, `INVALID_VOTE`, `RATE_LIMITED`, `SERVER_ERROR`, and `RESUME_REJECTED` — on which the client
 clears `sessionStorage` and returns to the join screen rather than retrying
 forever.
 
@@ -1048,7 +1096,8 @@ and `create` / `join` / `resume` / `leave` / `start` / `disconnect` /
 
 That puts every rule above — host promotion, nickname collisions, the grace
 periods, the reaping sweep, the round's own state machine, when a game has run
-out of players, and the scoring of a guess — under fast deterministic unit tests
+out of players, the scoring of a guess, and who may vote on a round and when —
+under fast deterministic unit tests
 with a fake clock. `matching.ts` and `scoring.ts` are pure functions of their
 arguments and are tested on their own, which is where "would a player call this
 right?" is argued rather than in the store. A thin adapter maps socket events to
@@ -1095,8 +1144,9 @@ compiled to WASM rather than an imitation of it, booted once per process and
 wiped clean for every test, and `admin.test.ts` runs the admin's half of it
 the same way — listing and searching, the edit that may not make a duplicate
 or leave a round with no language, the deletions — one, or several in one
-transaction — that hand back what they removed, and the picture two rounds
-share; the game's `bank/source.test.ts`
+transaction — that hand back what they removed, the picture two rounds
+share, and the votes, counted per round and taken with a deleted one; the
+game's `bank/source.test.ts`
 drives the consuming side —
 draws, cross-language aliases, and the misses that fail a round — against it;
 and `tools/fill`'s `fill.test.ts` drives the producing side — thinnest shelf
@@ -1152,11 +1202,12 @@ These are deliberately not decided yet. Ask before assuming an answer:
   out to be the point of the page or the problem with it.
 - **The bank has no curator but a person.** The admin lets an operator retire
   a round, add an alias and see how often each round has been dealt — but
-  nothing *automatic* retires a round nobody solves, turns near-miss guesses
-  into aliases, or decides how deep a topic's shelf *should* be: the fill tool
-  fills evenly for as long as it runs. The play data to drive all three
-  exists per round and is currently thrown away at reveal, so the admin
-  cannot show it either.
+  nothing *automatic* retires a round nobody solves or nobody liked, turns
+  near-miss guesses into aliases, or decides how deep a topic's shelf
+  *should* be: the fill tool fills evenly for as long as it runs. The votes
+  are kept now (see Rating a Round) and counted onto every record the admin
+  reads, but not yet shown; the rest of the play data — who solved a round,
+  and how fast — is still thrown away at reveal.
 - **The admin creates nothing.** It edits, replaces and deletes, and the fill
   tool is still the only way a round is born. A hand-made round — a picture
   uploaded from scratch with its texts typed in — is the obvious next thing

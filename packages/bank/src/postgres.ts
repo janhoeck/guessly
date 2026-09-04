@@ -27,9 +27,10 @@ import {
   type BankedRoundText,
   type NewBankedRound,
   type RoundRepository,
+  type RoundVoteTally,
   type TopicStock,
 } from "./repository.js";
-import { rounds, roundTexts } from "./schema.js";
+import { rounds, roundTexts, roundVotes } from "./schema.js";
 
 /**
  * The bank on Postgres, through Drizzle. Right for what the bank actually is:
@@ -75,14 +76,18 @@ const toBankedRound = (row: RoundRow, texts: BankedRound["texts"]): BankedRound 
   texts,
 });
 
+const NO_VOTES: RoundVoteTally = { up: 0, down: 0 };
+
 const toRecord = (
   row: RoundRow & { createdAt: number; timesServed: number; lastServedAt: number | null },
   texts: BankedRound["texts"],
+  votes: RoundVoteTally,
 ): BankedRoundRecord => ({
   ...toBankedRound(row, texts),
   createdAt: row.createdAt,
   timesServed: row.timesServed,
   lastServedAt: row.lastServedAt,
+  votes,
 });
 
 /** The whole `rounds` row, for the reads that want the ledger too. */
@@ -175,9 +180,37 @@ export function createDrizzleRoundRepository(options: {
     (await textsForAll(db, [roundId])).get(roundId) ?? {};
 
   /**
-   * These rounds with their ledgers and every language, newest first,
-   * through whichever database. Only the ones that exist: an id nobody
-   * holds is simply not in the answer.
+   * How each of these rounds has been received, counted in the database and
+   * gathered per round — the same one-query-per-page shape as `textsForAll`,
+   * and for the same reason. A round nobody has voted on is simply absent
+   * from the map; the caller reads that as zero and zero.
+   */
+  const votesForAll = async (
+    db: BankDatabase,
+    roundIds: readonly number[],
+  ): Promise<Map<number, RoundVoteTally>> => {
+    const tallies = new Map<number, RoundVoteTally>();
+    if (roundIds.length === 0) return tallies;
+
+    const rows = await db
+      .select({ roundId: roundVotes.roundId, vote: roundVotes.vote, n: count() })
+      .from(roundVotes)
+      .where(inArray(roundVotes.roundId, [...roundIds]))
+      .groupBy(roundVotes.roundId, roundVotes.vote);
+
+    for (const row of rows) {
+      const own = tallies.get(row.roundId) ?? { ...NO_VOTES };
+      if (row.vote === "up") own.up = row.n;
+      else if (row.vote === "down") own.down = row.n;
+      tallies.set(row.roundId, own);
+    }
+    return tallies;
+  };
+
+  /**
+   * These rounds with their ledgers, every language and their votes, newest
+   * first, through whichever database. Only the ones that exist: an id
+   * nobody holds is simply not in the answer.
    */
   const recordsFor = async (db: BankDatabase, ids: readonly number[]): Promise<BankedRoundRecord[]> => {
     if (ids.length === 0) return [];
@@ -186,11 +219,9 @@ export function createDrizzleRoundRepository(options: {
       .from(rounds)
       .where(inArray(rounds.id, [...ids]))
       .orderBy(desc(rounds.id));
-    const texts = await textsForAll(
-      db,
-      rows.map((row) => row.id),
-    );
-    return rows.map((row) => toRecord(row, texts.get(row.id) ?? {}));
+    const found = rows.map((row) => row.id);
+    const [texts, votes] = await Promise.all([textsForAll(db, found), votesForAll(db, found)]);
+    return rows.map((row) => toRecord(row, texts.get(row.id) ?? {}, votes.get(row.id) ?? NO_VOTES));
   };
 
   /** One round with its ledger and every language, through whichever database. */
@@ -370,6 +401,19 @@ export function createDrizzleRoundRepository(options: {
       return rows.flatMap((row) => row.aliases);
     },
 
+    async recordVote(vote) {
+      // One insert and no lock: rows are only ever added, so two servers
+      // voting on the same round at once have nothing to interleave. The
+      // foreign key is the one check — a round the admin has just deleted
+      // refuses the row, which is the right answer.
+      await open().insert(roundVotes).values({
+        roundId: vote.roundId,
+        language: vote.language,
+        vote: vote.vote,
+        createdAt: vote.at,
+      });
+    },
+
     async list(filter, page) {
       const db = open();
       /** A text row of *this* round, for the two per-language questions below. */
@@ -407,12 +451,10 @@ export function createDrizzleRoundRepository(options: {
           .offset(page.offset),
       ]);
 
-      const texts = await textsForAll(
-        db,
-        rows.map((row) => row.id),
-      );
+      const found = rows.map((row) => row.id);
+      const [texts, votes] = await Promise.all([textsForAll(db, found), votesForAll(db, found)]);
       return {
-        rounds: rows.map((row) => toRecord(row, texts.get(row.id) ?? {})),
+        rounds: rows.map((row) => toRecord(row, texts.get(row.id) ?? {}, votes.get(row.id) ?? NO_VOTES)),
         total: counted?.n ?? 0,
       };
     },

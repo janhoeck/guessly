@@ -1,5 +1,5 @@
 import type { RoundContent } from "@guessly/protocol";
-import type { RoundRequest } from "../lobby/store.js";
+import type { RoundRequest, RoundVoteRecord } from "../lobby/store.js";
 
 /**
  * Thrown when a round cannot be built. Defined in `@guessly/bank` — the seam
@@ -21,6 +21,13 @@ export interface SourcedRound {
   aliases: string[];
   /** For the server log. Never broadcast. */
   subject: string;
+  /**
+   * The bank's own id for this round, so that what the players make of it
+   * can be written down against the right row — see `RoundFeedback`. Null
+   * from a source that keeps no ledger, a fixture or a stub: a vote on such
+   * a round is accepted and goes nowhere.
+   */
+  id: number | null;
 }
 
 /**
@@ -33,4 +40,21 @@ export interface SourcedRound {
 export interface RoundContentSource {
   /** Rejects with a `RoundSourceError` if no round could be built. */
   build(request: RoundRequest, signal: AbortSignal): Promise<SourcedRound>;
+}
+
+/**
+ * The same seam, in the other direction: the game telling the bank what the
+ * players thought of what it was dealt. A separate interface rather than a
+ * second method on `RoundContentSource`, because a source that only finds
+ * content — a fixture in a test — has no ledger to write to and should not
+ * have to pretend it does. `bank/feedback.ts` is the one real implementation.
+ */
+export interface RoundFeedback {
+  /**
+   * Files one player's verdict. Resolves when it is written *or* when the
+   * failure has been logged, and never rejects: the player was acked before
+   * this was called, and a bank that cannot take a vote is news for the
+   * log, not for the room.
+   */
+  record(vote: RoundVoteRecord): Promise<void>;
 }

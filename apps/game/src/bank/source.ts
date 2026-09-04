@@ -99,6 +99,8 @@ export function createBankedRoundSource(options: BankedRoundSourceOptions): Roun
       answer: text.answer,
       aliases: acceptedAliases(banked.texts, language),
       subject: banked.subject,
+      // Carried through so a vote on this round lands on this row.
+      id: banked.id,
     };
   };
 

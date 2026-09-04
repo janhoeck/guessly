@@ -1,6 +1,7 @@
 import {
   err,
   isLanguageId,
+  isRoundVote,
   isTopicId,
   ok,
   type Ack,
@@ -12,6 +13,7 @@ import {
   type SetTargetPayload,
   type SetTopicsPayload,
   type TopicId,
+  type VotePayload,
 } from "@guessly/protocol";
 
 /**
@@ -83,6 +85,17 @@ export function parseGuess(raw: unknown): Ack<GuessPayload> {
   }
   if (typeof guess !== "string") return err("INVALID_GUESS", "A guess is required.");
   return ok({ roundNumber, guess });
+}
+
+/** A `RoundVote` is a closed union of two strings, so membership is the whole check. */
+export function parseVote(raw: unknown): Ack<VotePayload> {
+  const payload = isRecord(raw) ? raw : {};
+  const { roundNumber, vote } = payload;
+  if (typeof roundNumber !== "number") {
+    return err("ROUND_NOT_OPEN", "A round number is required.");
+  }
+  if (!isRoundVote(vote)) return err("INVALID_VOTE", "A vote is thumbs up or thumbs down.");
+  return ok({ roundNumber, vote });
 }
 
 export function parseSetTopics(raw: unknown): Ack<SetTopicsPayload> {

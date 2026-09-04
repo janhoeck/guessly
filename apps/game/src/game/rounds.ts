@@ -152,6 +152,7 @@ export function createRoundRunner(deps: RoundRunnerDeps): RoundRunner {
           sourced.content,
           sourced.answer,
           sourced.aliases,
+          sourced.id,
         );
         // The store refused it: the lobby moved on while we were asking.
         if (!state) return settle(request.code, run);

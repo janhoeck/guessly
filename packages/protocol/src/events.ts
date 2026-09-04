@@ -1,6 +1,7 @@
 import type { Ack } from "./errors.js";
 import type { LanguageId } from "./languages.js";
 import type { LobbyState, LobbySummary } from "./lobby.js";
+import type { RoundVote } from "./round.js";
 import type { TopicId } from "./topics.js";
 
 export interface CreateLobbyPayload {
@@ -99,6 +100,17 @@ export type GuessResult =
   | { correct: false }
   | { correct: true; points: number; elapsedMs: number };
 
+export interface VotePayload {
+  /**
+   * Which round is being judged, quoted back from the snapshot for the same
+   * reason a guess quotes it: the intermission is five seconds long, and a
+   * thumb that lands after the next countdown has opened must not be filed
+   * against a round the voter has not seen yet.
+   */
+  roundNumber: number;
+  vote: RoundVote;
+}
+
 /**
  * A lobby is never closed because the host left — the longest-present remaining
  * player is promoted instead. Both reasons here come from the reaping sweep.
@@ -188,6 +200,16 @@ export interface ClientToServerEvents {
   "round:guess": (
     payload: GuessPayload,
     ack: (result: Ack<GuessResult>) => void,
+  ) => void;
+  /**
+   * One verdict on the round just revealed — thumbs up or down — accepted
+   * from the reveal until the next countdown opens, and once per seat. Like
+   * a guess, it is answered in the ack alone: a vote is between the player
+   * and the bank, and nothing about it rides in the snapshot.
+   */
+  "round:vote": (
+    payload: VotePayload,
+    ack: (result: Ack<Record<string, never>>) => void,
   ) => void;
   "lobby:leave": (ack: (result: Ack<Record<string, never>>) => void) => void;
 }

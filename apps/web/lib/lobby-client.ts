@@ -2,9 +2,11 @@
 
 import { toast } from "sonner"
 import {
+  type Ack,
   type GuessResult,
   type LanguageId,
   type LobbyState,
+  type RoundVote,
   type TopicId,
 } from "@guessly/protocol"
 
@@ -38,6 +40,13 @@ export type LobbyPending = "create" | "join" | "start" | null
  * null exists so the field can stop waiting rather than sit disabled forever.
  */
 export type GuessOutcome = GuessResult | null
+
+/**
+ * What came back from a thumb: taken, or refused and why. The buttons that
+ * sent it are the only thing on this side that cares, because — like a miss —
+ * a vote is the one player's business and never rides in the snapshot.
+ */
+export type VoteOutcome = Ack<Record<string, never>>
 
 export interface LobbySnapshot {
   /** The server's snapshot, or null when this tab is not in a lobby. */
@@ -340,6 +349,17 @@ export const lobbyActions = {
         settle(result.data)
       })
     )
+  },
+
+  /**
+   * One thumb on the round just revealed. Answered in the ack alone, like a
+   * guess: nothing about it goes to the room, so the buttons that have to
+   * lock are the ones that sent it. What the server refuses and why is the
+   * caller's to read — a thumb that lands after the next countdown opened is
+   * the common refusal, and not one worth a toast.
+   */
+  vote(roundNumber: number, vote: RoundVote, settle: (outcome: VoteOutcome) => void): void {
+    getSocket().emit("round:vote", { roundNumber, vote }, guard(settle))
   },
 
   leave(): void {

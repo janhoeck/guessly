@@ -41,6 +41,21 @@ export type RoundContent =
     });
 
 /**
+ * What a player thought of a round: was this a good one to be shown, or not.
+ *
+ * Two values and nothing finer, because the question is asked in the five
+ * seconds between the answer going up and the next countdown, and a scale
+ * nobody has time to read is a scale nobody uses. It is about the *content* —
+ * the picture, the paraphrase, the question — and never about whether the
+ * player got it; the room hears nothing of it, and it goes to the bank, where
+ * it is the operator's to read.
+ */
+export type RoundVote = "up" | "down";
+
+export const isRoundVote = (value: unknown): value is RoundVote =>
+  value === "up" || value === "down";
+
+/**
  * One player's round, once they have got it right.
  *
  * This is public the moment it exists rather than held back to the reveal, and

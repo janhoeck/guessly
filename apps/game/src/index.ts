@@ -2,6 +2,7 @@ import { createServer, type ServerResponse } from "node:http";
 import { Server } from "socket.io";
 import { SWEEP_INTERVAL_MS } from "@guessly/protocol";
 import { createPostgresRoundRepository, createS3ImageStore } from "@guessly/bank";
+import { createBankedRoundFeedback } from "./bank/feedback.js";
 import { createBankedRoundSource } from "./bank/source.js";
 import { loadConfig, loadEnvFile } from "./config.js";
 import { createLobbyStore } from "./lobby/store.js";
@@ -100,7 +101,10 @@ const source = createBankedRoundSource({
   repository,
   publicBaseUrl: config.publicBaseUrl,
 });
-const adapter = registerSocketHandlers(io, store, source);
+// The one thing the server writes back: what the players thought of a round,
+// filed against the row it was dealt from for the admin to read.
+const feedback = createBankedRoundFeedback(repository);
+const adapter = registerSocketHandlers(io, store, source, feedback);
 
 /**
  * The lobby's timer. Grace periods and both lobby TTLs are all evaluated here,

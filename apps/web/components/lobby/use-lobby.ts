@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import type { LanguageId, LobbyState, TopicId } from "@guessly/protocol"
+import type { LanguageId, LobbyState, RoundVote, TopicId } from "@guessly/protocol"
 
 import {
   getServerSnapshot,
@@ -10,6 +10,7 @@ import {
   subscribe,
   type GuessOutcome,
   type LobbyPending,
+  type VoteOutcome,
 } from "@/lib/lobby-client"
 
 /**
@@ -25,7 +26,7 @@ import {
  * whole reason the protocol has no incremental events.
  */
 
-export type { GuessOutcome, LobbyPending }
+export type { GuessOutcome, LobbyPending, VoteOutcome }
 
 export interface Lobby {
   /** The server's snapshot, or null when this tab is not in a lobby. */
@@ -46,8 +47,10 @@ export interface Lobby {
   setLanguage(language: LanguageId): void
   setTargetScore(targetScore: number): void
   start(): void
-  /** The one call here whose answer does not arrive as a snapshot. See lobby-client. */
+  /** One of two calls here whose answer does not arrive as a snapshot. See lobby-client. */
   guess(roundNumber: number, text: string, settle: (outcome: GuessOutcome) => void): void
+  /** The other one: a thumb on the round just revealed, answered to the voter alone. */
+  vote(roundNumber: number, vote: RoundVote, settle: (outcome: VoteOutcome) => void): void
   leave(): void
 }
 

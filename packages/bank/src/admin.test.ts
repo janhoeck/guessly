@@ -281,6 +281,49 @@ describe("delete and imageReferences", () => {
   });
 });
 
+describe("votes", () => {
+  it("counts the thumbs per round, and reads zero for a round nobody has judged", async () => {
+    await repo.insert(named("France", "Frankreich"), NOON, false);
+    await repo.insert(named("Japan", "Japan"), NOON + 1, false);
+    const france = await idOf("France");
+    const japan = await idOf("Japan");
+
+    await repo.recordVote({ roundId: france, language: "en", vote: "up", at: NOON + 10 });
+    await repo.recordVote({ roundId: france, language: "de", vote: "up", at: NOON + 11 });
+    await repo.recordVote({ roundId: france, language: "en", vote: "down", at: NOON + 12 });
+
+    expect((await repo.get(france))?.votes).toEqual({ up: 2, down: 1 });
+    expect((await repo.get(japan))?.votes).toEqual({ up: 0, down: 0 });
+    expect((await repo.list({}, all)).rounds.map((r) => [r.subject, r.votes])).toEqual([
+      ["Japan", { up: 0, down: 0 }],
+      ["France", { up: 2, down: 1 }],
+    ]);
+  });
+
+  it("refuses a vote on a round that is not there", async () => {
+    await expect(
+      repo.recordVote({ roundId: 404, language: "en", vote: "up", at: NOON }),
+    ).rejects.toThrow();
+  });
+
+  /**
+   * The votes go with the round. If they did not, the foreign key would
+   * refuse the deletion — so a deletion that succeeds with votes on the
+   * round is the cascade working, and the record handed back still says
+   * how the round was received.
+   */
+  it("takes a deleted round's votes with it", async () => {
+    await repo.insert(named("France", "Frankreich"), NOON, false);
+    const france = await idOf("France");
+    await repo.recordVote({ roundId: france, language: "en", vote: "down", at: NOON });
+
+    const gone = await repo.delete(france);
+
+    expect(gone?.votes).toEqual({ up: 0, down: 1 });
+    expect(await repo.get(france)).toBeNull();
+  });
+});
+
 describe("stock", () => {
   it("lists every catalogue topic, empty or not, in catalogue order", async () => {
     await repo.insert(named("France", "Frankreich"), NOON, false);

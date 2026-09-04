@@ -29,6 +29,7 @@ const flag: BankedRoundRecord = {
   createdAt: NOON,
   timesServed: 0,
   lastServedAt: null,
+  votes: { up: 0, down: 0 },
 };
 
 const song: BankedRoundRecord = {

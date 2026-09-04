@@ -14,7 +14,7 @@ import {
   type ServerToClientEvents,
   type SocketData,
 } from "@guessly/protocol";
-import type { RoundContentSource } from "../content/source.js";
+import type { RoundContentSource, RoundFeedback } from "../content/source.js";
 import { createRoundRunner } from "../game/rounds.js";
 import type { LobbyStore } from "../lobby/store.js";
 import { createRateLimiter, type RateLimiter } from "./rate-limit.js";
@@ -26,6 +26,7 @@ import {
   parseSetLanguage,
   parseSetTarget,
   parseSetTopics,
+  parseVote,
 } from "./validate.js";
 
 export type GameServer = Server<
@@ -60,6 +61,7 @@ export function registerSocketHandlers(
   io: GameServer,
   store: LobbyStore,
   source: RoundContentSource,
+  feedback: RoundFeedback,
 ): SocketAdapter {
   /** `${code}:${playerId}` to socket id. One seat, one live socket. */
   const seats = new Map<string, string>();
@@ -361,6 +363,27 @@ export function registerSocketHandlers(
         if (outcome.complete) {
           runner.finishEarly(seat.data.lobbyCode, parsed.data.roundNumber);
         }
+        return outcome.ack;
+      }),
+    );
+
+    socket.on("round:vote", (payload, ack) =>
+      run<Record<string, never>>(ack, limiter, () => {
+        const seat = requireSeat(socket);
+        if (!seat.ok) return seat;
+        const parsed = parseVote(payload);
+        if (!parsed.ok) return parsed;
+
+        const outcome = store.vote(
+          seat.data.lobbyCode,
+          seat.data.playerId,
+          parsed.data.roundNumber,
+          parsed.data.vote,
+        );
+        // No broadcast: nothing the room can see has changed. The bank is
+        // told behind the ack, and null is a round from a source with no
+        // ledger — accepted, and nowhere to file it.
+        if (outcome.record) void feedback.record(outcome.record);
         return outcome.ack;
       }),
     );

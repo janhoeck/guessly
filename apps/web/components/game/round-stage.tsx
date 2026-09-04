@@ -6,13 +6,21 @@ import {
   type LanguageId,
   type Player,
   type RoundState,
+  type RoundVote,
 } from "@guessly/protocol"
 
 import { GuessForm } from "@/components/game/guess-form"
 import { RoundImage } from "@/components/game/round-image"
 import { RoundTimer } from "@/components/game/round-timer"
 import { useServerClock } from "@/components/game/use-server-clock"
-import type { GuessOutcome } from "@/components/lobby/use-lobby"
+import { VoteButtons } from "@/components/game/vote-buttons"
+import type { GuessOutcome, VoteOutcome } from "@/components/lobby/use-lobby"
+
+type OnVote = (
+  roundNumber: number,
+  vote: RoundVote,
+  settle: (outcome: VoteOutcome) => void
+) => void
 
 /**
  * The round itself: the question, the thing to look at, the clock, and the field
@@ -31,6 +39,7 @@ function RoundStage({
   language,
   targetScore,
   onGuess,
+  onVote,
 }: {
   round: RoundState
   players: Player[]
@@ -42,6 +51,7 @@ function RoundStage({
     text: string,
     settle: (outcome: GuessOutcome) => void
   ) => void
+  onVote: OnVote
 }) {
   const topic = topicById(round.topic)
   // Everything the content source wrote is in the lobby's language, and only
@@ -134,12 +144,14 @@ function RoundStage({
 
       {revealed && (
         <Reveal
+          roundNumber={round.number}
           answer={round.answer ?? ""}
           answerLang={tag}
           scored={round.results.length}
           players={players}
           targetScore={targetScore}
           opensAt={round.intermissionEndsAt}
+          onVote={onVote}
         />
       )}
     </section>
@@ -147,26 +159,33 @@ function RoundStage({
 }
 
 /**
- * The answer, and what happens next.
+ * The answer, what happens next, and the one thing left to do.
  *
  * The gap between rounds is a real deadline the server stamped, so it is counted
  * down rather than waited out: five seconds of a screen that says nothing reads
- * exactly like five seconds of a screen that has broken.
+ * exactly like five seconds of a screen that has broken. The thumbs sit in that
+ * gap because it is the only moment the picture and the answer are up together
+ * and nobody is typing — the one time a player can judge the round rather than
+ * play it.
  */
 function Reveal({
+  roundNumber,
   answer,
   answerLang,
   scored,
   players,
   targetScore,
   opensAt,
+  onVote,
 }: {
+  roundNumber: number
   answer: string
   answerLang: string
   scored: number
   players: Player[]
   targetScore: number
   opensAt: number | null
+  onVote: OnVote
 }) {
   const won = players.some((player) => player.score >= targetScore)
   const now = useServerClock(opensAt !== null && !won)
@@ -183,16 +202,21 @@ function Reveal({
         </strong>
       </div>
 
-      <p className="text-xs text-muted-foreground" aria-live="polite">
-        {scored === 0
-          ? "Nobody got that one."
-          : `${scored} of ${players.length} got it.`}{" "}
-        {won
-          ? "That is the game."
-          : seconds > 0
-            ? `Next round in ${seconds}…`
-            : "Next round coming up…"}
-      </p>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="text-xs text-muted-foreground" aria-live="polite">
+          {scored === 0
+            ? "Nobody got that one."
+            : `${scored} of ${players.length} got it.`}{" "}
+          {won
+            ? "That is the game."
+            : seconds > 0
+              ? `Next round in ${seconds}…`
+              : "Next round coming up…"}
+        </p>
+        {/* Keyed on the round: the next reveal is a fresh pair of buttons
+            rather than a locked pair to remember to unlock. */}
+        <VoteButtons key={roundNumber} roundNumber={roundNumber} onVote={onVote} />
+      </div>
     </div>
   )
 }

@@ -24,7 +24,7 @@ import { Button } from "@guessly/ui/components/ui/button"
  */
 function GameRoom({ code }: { code: string }) {
   const router = useRouter()
-  const { state, playerId, settled, guess, leave } = useLobby()
+  const { state, playerId, settled, guess, vote, leave } = useLobby()
 
   /** Distinguishes "left on purpose" from "was never here", and is read while
    *  choosing where to go, so it is state rather than a ref. */
@@ -117,6 +117,7 @@ function GameRoom({ code }: { code: string }) {
               language={state.language}
               targetScore={state.targetScore}
               onGuess={guess}
+              onVote={vote}
             />
           )}
         </div>

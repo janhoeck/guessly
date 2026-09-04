@@ -663,6 +663,100 @@ describe("guessing", () => {
   });
 });
 
+describe("voting", () => {
+  /** Round one revealed: the answer is up and the intermission is running. */
+  function revealed(bankId: number | null = 42) {
+    const harness = counting(COUNTDOWN_DURATION_MS);
+    harness.store.deliverRound(harness.code, harness.request.number, A_PICTURE, "Bhutan", [], bankId);
+    harness.advance(ROUND_DURATION_MS);
+    harness.store.revealRound(harness.code, 1);
+    return harness;
+  }
+
+  it("takes one thumb per seat and hands back what to file, stamped and in the lobby's language", () => {
+    const { store, code, host, joiners } = revealed();
+
+    const outcome = store.vote(code, host.playerId, 1, "up");
+
+    expect(outcome.ack).toEqual({ ok: true, data: {} });
+    expect(outcome.record).toEqual({
+      roundId: 42,
+      language: DEFAULT_LANGUAGE,
+      vote: "up",
+      at: NOON + COUNTDOWN_DURATION_MS + ROUND_DURATION_MS,
+    });
+    expect(store.vote(code, joiners[0]!.playerId, 1, "down").record?.vote).toBe("down");
+  });
+
+  it("refuses a second thumb from the same seat, whichever way it points", () => {
+    const { store, code, host } = revealed();
+    store.vote(code, host.playerId, 1, "up");
+
+    const again = store.vote(code, host.playerId, 1, "down");
+
+    expect(failure(again.ack)).toBe("ALREADY_VOTED");
+    expect(again.record).toBeNull();
+  });
+
+  it("refuses a vote before the reveal, when the round has not been seen whole", () => {
+    const { store, code, host } = playing();
+    expect(failure(store.vote(code, host.playerId, 1, "up").ack)).toBe("ROUND_NOT_OPEN");
+  });
+
+  it("refuses a vote once the next countdown has opened, whichever round it quotes", () => {
+    const { store, code, host, advance } = revealed();
+    advance(INTERMISSION_DURATION_MS);
+    store.advance(code, 1);
+
+    expect(failure(store.vote(code, host.playerId, 1, "up").ack)).toBe("ROUND_NOT_OPEN");
+    expect(failure(store.vote(code, host.playerId, 2, "up").ack)).toBe("ROUND_NOT_OPEN");
+  });
+
+  it("refuses a vote quoting a round that is not the one on screen", () => {
+    const { store, code, host } = revealed();
+    expect(failure(store.vote(code, host.playerId, 2, "up").ack)).toBe("ROUND_NOT_OPEN");
+  });
+
+  it("refuses somebody who is not in the lobby", () => {
+    const { store, code } = revealed();
+    expect(failure(store.vote(code, "stranger", 1, "up").ack)).toBe("LOBBY_NOT_FOUND");
+    expect(failure(store.vote("ZZZZZ", "stranger", 1, "up").ack)).toBe("LOBBY_NOT_FOUND");
+  });
+
+  /** A fixture has no row in the bank; the thumb still counts, and goes nowhere. */
+  it("accepts a vote on a round with no bank id, with nothing to file", () => {
+    const { store, code, host } = revealed(null);
+
+    const outcome = store.vote(code, host.playerId, 1, "up");
+
+    expect(outcome.ack.ok).toBe(true);
+    expect(outcome.record).toBeNull();
+    expect(failure(store.vote(code, host.playerId, 1, "up").ack)).toBe("ALREADY_VOTED");
+  });
+
+  it("files the vote in the language the room was playing in", () => {
+    const { store, code, host, advance } = lobbyOf(2);
+    store.setLanguage(code, host.playerId, "de");
+    const request = unwrap(store.start(code, host.playerId));
+    advance(COUNTDOWN_DURATION_MS);
+    store.deliverRound(code, request.number, A_PICTURE, "Bhutan", [], 42);
+    advance(ROUND_DURATION_MS);
+    store.revealRound(code, request.number);
+
+    expect(store.vote(code, host.playerId, request.number, "down").record?.language).toBe("de");
+  });
+
+  it("keeps who voted, and the bank's id, off the wire", () => {
+    const { store, code, host } = revealed();
+    store.vote(code, host.playerId, 1, "up");
+
+    const round = store.snapshot(code)?.round;
+
+    expect(round).not.toHaveProperty("votes");
+    expect(round).not.toHaveProperty("bankId");
+  });
+});
+
 describe("the round loop", () => {
   /** A lobby whose round one has been played, revealed, and is now in its gap. */
   function inIntermission(score: number) {

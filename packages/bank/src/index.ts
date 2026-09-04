@@ -13,11 +13,13 @@ export {
   type BankedRoundRecord,
   type BankedRoundText,
   type NewBankedRound,
+  type NewRoundVote,
   type RoundFilter,
   type RoundPage,
   type RoundPatch,
   type RoundRepository,
   type RoundUpdateResult,
+  type RoundVoteTally,
   type TopicStock,
 } from "./repository.js";
 export { createPostgresRoundRepository } from "./postgres.js";

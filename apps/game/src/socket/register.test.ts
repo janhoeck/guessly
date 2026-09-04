@@ -23,9 +23,10 @@ import {
 import {
   RoundSourceError,
   type RoundContentSource,
+  type RoundFeedback,
   type SourcedRound,
 } from "../content/source.js";
-import { createLobbyStore, type LobbyStore } from "../lobby/store.js";
+import { createLobbyStore, type LobbyStore, type RoundVoteRecord } from "../lobby/store.js";
 import { registerSocketHandlers, type GameServer, type SocketAdapter } from "./register.js";
 
 let httpServer: HttpServer;
@@ -33,6 +34,7 @@ let io: GameServer;
 let store: LobbyStore;
 let adapter: SocketAdapter;
 let content: StubSource;
+let feedback: StubFeedback;
 let url: string;
 let clock: number;
 const clients: ClientSocket[] = [];
@@ -43,7 +45,8 @@ beforeEach(async () => {
   io = new Server(httpServer);
   store = createLobbyStore({ now: () => clock });
   content = stubSource();
-  adapter = registerSocketHandlers(io, store, content.source);
+  feedback = stubFeedback();
+  adapter = registerSocketHandlers(io, store, content.source, feedback.feedback);
 
   await new Promise<void>((resolve) => httpServer.listen(0, resolve));
   url = `http://localhost:${(httpServer.address() as AddressInfo).port}`;
@@ -126,6 +129,28 @@ function stubSource(): StubSource {
     fail: (message) => failRound?.(new RoundSourceError(message)),
   };
 }
+
+interface StubFeedback {
+  feedback: RoundFeedback;
+  /** Every vote the adapter handed over, in the order it did. */
+  filed: RoundVoteRecord[];
+}
+
+/** The bank's ledger, as far as the adapter can tell: it takes votes and keeps them. */
+function stubFeedback(): StubFeedback {
+  const filed: RoundVoteRecord[] = [];
+  return {
+    filed,
+    feedback: {
+      async record(vote) {
+        filed.push(vote);
+      },
+    },
+  };
+}
+
+/** The id the stub source's rounds are banked under, so a vote has a row to land on. */
+const BANK_ID = 7;
 
 const A_PICTURE: RoundContent = {
   kind: "image",
@@ -335,6 +360,7 @@ describe("starting a round", () => {
       answer: "Bhutan",
       aliases: ["Kingdom of Bhutan"],
       subject: "Flag of Bhutan",
+      id: BANK_ID,
     });
 
     for (const state of await Promise.all(seen)) {
@@ -364,6 +390,7 @@ describe("starting a round", () => {
       answer: "Bhutan",
       aliases: [],
       subject: "Flag of Bhutan",
+      id: BANK_ID,
     });
     expect((await live).round?.content).toEqual(A_PICTURE);
   });
@@ -417,6 +444,7 @@ async function playing() {
     answer: "Bhutan",
     aliases: ["Kingdom of Bhutan"],
     subject: "Flag of Bhutan",
+    id: BANK_ID,
   });
   await Promise.all(live);
   return table;
@@ -551,6 +579,7 @@ describe("prefetching the next round", () => {
     answer: "Japan",
     aliases: ["Nippon"],
     subject: "Flag of Japan",
+    id: BANK_ID,
   };
 
   /** Round one answered by everybody, with the clock wound back so the reveal,
@@ -706,6 +735,7 @@ describe("leaving", () => {
       answer: "Nepal",
       aliases: [],
       subject: "Flag of Nepal",
+      id: BANK_ID,
     });
     await settle();
     expect(store.snapshot(state.code)?.status).toBe("finished");
@@ -864,5 +894,82 @@ describe("the rate limiter", () => {
       RATE_LIMIT_EVENTS_PER_SEC,
     );
     expect(client.connected).toBe(true);
+  });
+});
+
+describe("voting", () => {
+  /** Round one revealed: both players have it, so the reveal comes early. */
+  async function revealed() {
+    const table = await playing();
+    const over = stateWhere(table.host, (state) => state.status === "intermission");
+    await emit(table.host, "round:guess", { roundNumber: 1, guess: "Bhutan" });
+    await emit(table.guest, "round:guess", { roundNumber: 1, guess: "Bhutan" });
+    await over;
+    return table;
+  }
+
+  it("files the thumb against the banked round and tells the room nothing", async () => {
+    const { host, guest } = await revealed();
+    let overheard = false;
+    guest.on("lobby:state", () => {
+      overheard = true;
+    });
+
+    expect(await emit(host, "round:vote", { roundNumber: 1, vote: "up" })).toEqual({
+      ok: true,
+      data: {},
+    });
+    await settle();
+
+    expect(feedback.filed).toEqual([
+      { roundId: BANK_ID, language: DEFAULT_LANGUAGE, vote: "up", at: expect.any(Number) },
+    ]);
+    expect(overheard).toBe(false);
+  });
+
+  it("refuses a second thumb from the same seat", async () => {
+    const { host } = await revealed();
+    await emit(host, "round:vote", { roundNumber: 1, vote: "up" });
+
+    expect(await emit(host, "round:vote", { roundNumber: 1, vote: "down" })).toMatchObject({
+      ok: false,
+      error: "ALREADY_VOTED",
+    });
+    await settle();
+    expect(feedback.filed).toHaveLength(1);
+  });
+
+  it("refuses a thumb while the round is still being guessed", async () => {
+    const { host } = await playing();
+
+    expect(await emit(host, "round:vote", { roundNumber: 1, vote: "up" })).toMatchObject({
+      ok: false,
+      error: "ROUND_NOT_OPEN",
+    });
+    await settle();
+    expect(feedback.filed).toEqual([]);
+  });
+
+  it("survives a payload that is not even the right shape", async () => {
+    const { host } = await revealed();
+
+    expect(await emit(host, "round:vote", "up")).toMatchObject({
+      ok: false,
+      error: "ROUND_NOT_OPEN",
+    });
+    expect(await emit(host, "round:vote", { roundNumber: 1, vote: "meh" })).toMatchObject({
+      ok: false,
+      error: "INVALID_VOTE",
+    });
+  });
+
+  it("refuses a stranger who is not in a lobby at all", async () => {
+    await revealed();
+    const stranger = await connect();
+
+    expect(await emit(stranger, "round:vote", { roundNumber: 1, vote: "up" })).toMatchObject({
+      ok: false,
+      error: "LOBBY_NOT_FOUND",
+    });
   });
 });

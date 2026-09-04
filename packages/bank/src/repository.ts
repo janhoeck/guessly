@@ -1,4 +1,4 @@
-import type { LanguageId, RoundKind, TopicId } from "@guessly/protocol";
+import type { LanguageId, RoundKind, RoundVote, TopicId } from "@guessly/protocol";
 
 /**
  * The round bank's storage seam.
@@ -56,16 +56,38 @@ export interface BankedRound {
 export type NewBankedRound = Omit<BankedRound, "id">;
 
 /**
- * A round with its ledger: when it was banked and how often it has been
- * dealt. What the admin reads, and deliberately not what `draw` returns —
- * the game has no use for the numbers, and `NewBankedRound` is derived from
- * `BankedRound`, so putting them there would make every insert carry a
- * served count it does not own.
+ * How a round has been received: thumbs up and thumbs down, across every
+ * lobby it was dealt to. Both zero for a round nobody has judged yet.
+ */
+export interface RoundVoteTally {
+  up: number;
+  down: number;
+}
+
+/**
+ * One thumb, as the game server hands it over the moment a player casts it.
+ * The round it is about, the language the lobby was reading it in, and when —
+ * the server's clock, like every other timestamp in the bank.
+ */
+export interface NewRoundVote {
+  roundId: number;
+  language: LanguageId;
+  vote: RoundVote;
+  at: number;
+}
+
+/**
+ * A round with its ledger: when it was banked, how often it has been dealt,
+ * and what the players made of it. What the admin reads, and deliberately
+ * not what `draw` returns — the game has no use for the numbers, and
+ * `NewBankedRound` is derived from `BankedRound`, so putting them there would
+ * make every insert carry a served count it does not own.
  */
 export interface BankedRoundRecord extends BankedRound {
   createdAt: number;
   timesServed: number;
   lastServedAt: number | null;
+  votes: RoundVoteTally;
 }
 
 /**
@@ -182,9 +204,20 @@ export interface RoundRepository {
    * the duplicate check knows a round already answers to that name.
    */
   aliases(topic: TopicId): Promise<string[]>;
+  /**
+   * Writes one player's verdict on a round down. The one thing the game
+   * writes to the bank besides the draw's own served count — and, like that,
+   * it is fire-and-forget from the game's side: the player has already been
+   * acked, and a vote that could not be written is a line in the log, not a
+   * round that failed. A vote on a round that has since been deleted is
+   * refused by the foreign key and surfaces as a rejection here; the caller
+   * treats it the same way.
+   */
+  recordVote(vote: NewRoundVote): Promise<void>;
 
   // The admin's half: reading the shelf as a shelf, and changing what is on
-  // it. The game never calls any of these — it draws and nothing else.
+  // it. The game never calls any of these — it draws and votes, and nothing
+  // else.
 
   /** A page of rounds, newest first, narrowed by `filter`. */
   list(filter: RoundFilter, page: { offset: number; limit: number }): Promise<RoundPage>;

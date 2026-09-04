@@ -38,6 +38,7 @@ import {
   type ResumeLobbyResult,
   type RoundContent,
   type RoundKind,
+  type RoundVote,
   type TopicId,
 } from "@guessly/protocol";
 import { generateCode, generatePlayerId, generateToken, tokensMatch } from "./codes.js";
@@ -120,6 +121,35 @@ export interface GuessOutcome {
 }
 
 /**
+ * One thumb, ready to be written down: which banked round it is about, the
+ * language the room was reading it in, and when. Plain data, like
+ * `RoundRequest`, and for the same reason — the store decides that a vote
+ * counts and hands this out; where it is filed is the caller's business.
+ */
+export interface RoundVoteRecord {
+  roundId: number;
+  language: LanguageId;
+  vote: RoundVote;
+  at: number;
+}
+
+/**
+ * Everything a vote decides. Two things, going two places: the ack to the
+ * voter, and — when the vote counted *and* the round came from somewhere
+ * that can be told — what to file.
+ */
+export interface VoteOutcome {
+  /** What goes back to the voter. Nothing goes to the room. */
+  ack: Ack<Record<string, never>>;
+  /**
+   * The vote to write down, or null: either it was refused, or it counted
+   * against a round that has no bank id — a fixture, a stub — and there is
+   * nowhere to put it.
+   */
+  record: RoundVoteRecord | null;
+}
+
+/**
  * What happens when the intermission runs out: either somebody reached the
  * target and the game is over, or the next countdown opens and the content
  * source is asked for another round.
@@ -154,6 +184,11 @@ export interface LobbyStore {
    * round-scoped call below quotes `number` back and returns null if it no
    * longer matches, so an answer that arrives after the lobby moved on is
    * dropped rather than played on top of whatever is happening now.
+   *
+   * `bankId` is the bank's own id for the round, kept so a vote on it can be
+   * filed against the right row. Null — the default, for the fixtures the
+   * tests deliver — is a round from a source with no ledger, whose votes are
+   * accepted and go nowhere.
    */
   deliverRound(
     code: string,
@@ -161,6 +196,7 @@ export interface LobbyStore {
     content: RoundContent,
     answer: string,
     aliases: string[],
+    bankId?: number | null,
   ): LobbyState | null;
   /**
    * Describes the round *after* the one being played, so its content can be
@@ -181,6 +217,14 @@ export interface LobbyStore {
    * speed is the score here, so the only clock that counts is this one.
    */
   guess(code: string, playerId: string, roundNumber: number, guess: string): GuessOutcome;
+  /**
+   * One player's verdict on the round just revealed. Open from the reveal
+   * until the next countdown — the intermission, which is the only time the
+   * answer and the content are on screen together and the player has a hand
+   * free — and one per seat, because a thumb is a reaction and not a setting.
+   * Nothing the room can see changes, so no snapshot comes back.
+   */
+  vote(code: string, playerId: string, roundNumber: number, vote: RoundVote): VoteOutcome;
   /** The 20 seconds are up: the answer goes on the wire and guessing closes. */
   revealRound(code: string, number: number): LobbyState | null;
   /**
@@ -400,6 +444,8 @@ export function createLobbyStore(overrides: Partial<LobbyStoreDeps> = {}): Lobby
       revealed: false,
       intermissionEndsAt: null,
       nextTopic: null,
+      bankId: null,
+      votes: new Map(),
     };
 
     lobby.status = "countdown";
@@ -718,7 +764,7 @@ export function createLobbyStore(overrides: Partial<LobbyStoreDeps> = {}): Lobby
       return ok(openRound(lobby, 1, topic, deps.now()));
     },
 
-    deliverRound(code, number, content, answer, aliases) {
+    deliverRound(code, number, content, answer, aliases, bankId = null) {
       const found = roundInPhase(code, number, "countdown");
       if (!found) return null;
       const { lobby, round } = found;
@@ -733,6 +779,7 @@ export function createLobbyStore(overrides: Partial<LobbyStoreDeps> = {}): Lobby
       round.content = content;
       round.answer = answer;
       round.aliases = aliases;
+      round.bankId = bankId;
       round.startsAt = startsAt;
       round.endsAt = startsAt + ROUND_DURATION_MS;
       lobby.status = "in_round";
@@ -816,6 +863,41 @@ export function createLobbyStore(overrides: Partial<LobbyStoreDeps> = {}): Lobby
         ack: ok({ correct: true, points, elapsedMs }),
         state: toLobbyState(lobby, now),
         complete: everybodyAnswered(lobby, round),
+      };
+    },
+
+    vote(code, playerId, roundNumber, vote) {
+      const refuse = (error: ErrorCode, message: string): VoteOutcome => ({
+        ack: err(error, message),
+        record: null,
+      });
+
+      const lobby = lobbies.get(normalizeCode(code));
+      if (!lobby) return refuse("LOBBY_NOT_FOUND", "That lobby no longer exists.");
+      if (!lobby.players.has(playerId)) return refuse("LOBBY_NOT_FOUND", "You are not in that lobby.");
+
+      // The round being judged has to be the one on screen with its answer
+      // up. Before the reveal the player has not seen the whole round yet;
+      // after `advance` it is not on screen at all, and the number quoted is
+      // what stops a late thumb landing on the round that replaced it.
+      const round = lobby.round;
+      if (lobby.status !== "intermission" || !round || round.number !== roundNumber) {
+        return refuse("ROUND_NOT_OPEN", "That round is not taking votes.");
+      }
+      if (round.votes.has(playerId)) {
+        return refuse("ALREADY_VOTED", "You have already voted on this one.");
+      }
+
+      const now = deps.now();
+      round.votes.set(playerId, vote);
+      lobby.lastActivityAt = now;
+
+      return {
+        ack: ok({}),
+        record:
+          round.bankId === null
+            ? null
+            : { roundId: round.bankId, language: lobby.language, vote, at: now },
       };
     },
 

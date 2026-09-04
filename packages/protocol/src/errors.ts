@@ -14,6 +14,9 @@ export type ErrorCode =
   /** One seat gets one correct answer, and this seat has already had it. */
   | "ALREADY_ANSWERED"
   | "INVALID_GUESS"
+  /** One seat gets one vote on a round, and this seat has already cast it. */
+  | "ALREADY_VOTED"
+  | "INVALID_VOTE"
   | "RATE_LIMITED"
   /** Client clears sessionStorage and returns to the join screen. */
   | "RESUME_REJECTED"

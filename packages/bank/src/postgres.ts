@@ -1,15 +1,33 @@
 import { fileURLToPath } from "node:url";
-import { and, asc, count, eq, notInArray, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  count,
+  desc,
+  eq,
+  exists,
+  ilike,
+  inArray,
+  ne,
+  notExists,
+  notInArray,
+  or,
+  sql,
+  type SQL,
+} from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 import pg from "pg";
-import type { LanguageId, RoundKind, TopicId } from "@guessly/protocol";
+import { ALL_TOPIC_IDS, type LanguageId, type RoundKind, type TopicId } from "@guessly/protocol";
 import {
   answerKey,
   type BankedRound,
+  type BankedRoundRecord,
+  type BankedRoundText,
   type NewBankedRound,
   type RoundRepository,
+  type TopicStock,
 } from "./repository.js";
 import { rounds, roundTexts } from "./schema.js";
 
@@ -34,19 +52,18 @@ export type BankDatabase = PgDatabase<PgQueryResultHKT, Record<string, never>>;
 /** Where `drizzle-kit generate` writes: one level up from src/ and dist/ alike. */
 export const migrationsFolder = fileURLToPath(new URL("../drizzle", import.meta.url));
 
-const toBankedRound = (
-  row: {
-    id: number;
-    topic: string;
-    kind: string;
-    subject: string;
-    imageFile: string | null;
-    sourceUrl: string | null;
-    snippet: string | null;
-    snippetLanguage: string | null;
-  },
-  texts: BankedRound["texts"],
-): BankedRound => ({
+interface RoundRow {
+  id: number;
+  topic: string;
+  kind: string;
+  subject: string;
+  imageFile: string | null;
+  sourceUrl: string | null;
+  snippet: string | null;
+  snippetLanguage: string | null;
+}
+
+const toBankedRound = (row: RoundRow, texts: BankedRound["texts"]): BankedRound => ({
   id: row.id,
   topic: row.topic as TopicId,
   kind: row.kind as RoundKind,
@@ -56,6 +73,48 @@ const toBankedRound = (
   snippet: row.snippet,
   snippetLanguage: row.snippetLanguage,
   texts,
+});
+
+const toRecord = (
+  row: RoundRow & { createdAt: number; timesServed: number; lastServedAt: number | null },
+  texts: BankedRound["texts"],
+): BankedRoundRecord => ({
+  ...toBankedRound(row, texts),
+  createdAt: row.createdAt,
+  timesServed: row.timesServed,
+  lastServedAt: row.lastServedAt,
+});
+
+/** The whole `rounds` row, for the reads that want the ledger too. */
+const recordColumns = {
+  id: rounds.id,
+  topic: rounds.topic,
+  kind: rounds.kind,
+  subject: rounds.subject,
+  imageFile: rounds.imageFile,
+  sourceUrl: rounds.sourceUrl,
+  snippet: rounds.snippet,
+  snippetLanguage: rounds.snippetLanguage,
+  createdAt: rounds.createdAt,
+  timesServed: rounds.timesServed,
+  lastServedAt: rounds.lastServedAt,
+};
+
+/**
+ * A search term as a LIKE pattern that matches it literally: the three
+ * characters LIKE reads as syntax are escaped with Postgres's default escape,
+ * so "100%" finds "100%" rather than everything starting with 100.
+ */
+const containing = (term: string): string =>
+  `%${term.replace(/[\\%_]/g, (character) => `\\${character}`)}%`;
+
+const toTextRow = (roundId: number, language: LanguageId, text: BankedRoundText) => ({
+  roundId,
+  language,
+  question: text.question,
+  answer: text.answer,
+  answerKey: answerKey(text.answer),
+  aliases: text.aliases,
 });
 
 /**
@@ -74,28 +133,80 @@ export function createDrizzleRoundRepository(options: {
     return db;
   };
 
-  /** Every language one round was written in, gathered back into one object. */
-  const textsFor = async (roundId: number): Promise<BankedRound["texts"]> => {
-    const rows = await open()
+  /**
+   * Every language each of these rounds was written in, gathered back into
+   * one object per round. One query however many rounds, so a page of the
+   * list costs two round trips rather than one per row. Takes the database
+   * rather than opening it, so a transaction can read through itself.
+   */
+  const textsForAll = async (
+    db: BankDatabase,
+    roundIds: readonly number[],
+  ): Promise<Map<number, BankedRound["texts"]>> => {
+    const texts = new Map<number, BankedRound["texts"]>();
+    if (roundIds.length === 0) return texts;
+
+    const rows = await db
       .select({
+        roundId: roundTexts.roundId,
         language: roundTexts.language,
         question: roundTexts.question,
         answer: roundTexts.answer,
         aliases: roundTexts.aliases,
       })
       .from(roundTexts)
-      .where(eq(roundTexts.roundId, roundId))
-      .orderBy(asc(roundTexts.language));
+      .where(inArray(roundTexts.roundId, [...roundIds]))
+      .orderBy(asc(roundTexts.roundId), asc(roundTexts.language));
 
-    const texts: BankedRound["texts"] = {};
     for (const row of rows) {
-      texts[row.language as LanguageId] = {
+      const own = texts.get(row.roundId) ?? {};
+      own[row.language as LanguageId] = {
         question: row.question,
         answer: row.answer,
         aliases: row.aliases,
       };
+      texts.set(row.roundId, own);
     }
     return texts;
+  };
+
+  /** Every language one round was written in, gathered back into one object. */
+  const textsFor = async (roundId: number, db: BankDatabase = open()): Promise<BankedRound["texts"]> =>
+    (await textsForAll(db, [roundId])).get(roundId) ?? {};
+
+  /** One round with its ledger and every language, through whichever database. */
+  const recordFor = async (db: BankDatabase, id: number): Promise<BankedRoundRecord | null> => {
+    const [row] = await db.select(recordColumns).from(rounds).where(eq(rounds.id, id)).limit(1);
+    if (row === undefined) return null;
+    return toRecord(row, await textsFor(id, db));
+  };
+
+  /**
+   * Does the topic already answer to this word in this language, on a round
+   * other than `except`? The one rule both `insert` and `update` enforce,
+   * written once so they cannot drift.
+   */
+  const clashFor = async (
+    db: BankDatabase,
+    topic: string,
+    language: string,
+    answer: string,
+    except: number | null,
+  ): Promise<{ id: number; answer: string } | null> => {
+    const [clash] = await db
+      .select({ id: roundTexts.roundId, answer: roundTexts.answer })
+      .from(roundTexts)
+      .innerJoin(rounds, eq(rounds.id, roundTexts.roundId))
+      .where(
+        and(
+          eq(rounds.topic, topic),
+          eq(roundTexts.language, language),
+          eq(roundTexts.answerKey, answerKey(answer)),
+          ...(except === null ? [] : [ne(roundTexts.roundId, except)]),
+        ),
+      )
+      .limit(1);
+    return clash ?? null;
   };
 
   return {
@@ -120,19 +231,7 @@ export function createDrizzleRoundRepository(options: {
         for (const language of languages) {
           const text = round.texts[language];
           if (text === undefined) continue;
-          const clash = await tx
-            .select({ id: roundTexts.roundId })
-            .from(roundTexts)
-            .innerJoin(rounds, eq(rounds.id, roundTexts.roundId))
-            .where(
-              and(
-                eq(rounds.topic, round.topic),
-                eq(roundTexts.language, language),
-                eq(roundTexts.answerKey, answerKey(text.answer)),
-              ),
-            )
-            .limit(1);
-          if (clash.length > 0) return false;
+          if ((await clashFor(tx, round.topic, language, text.answer, null)) !== null) return false;
         }
 
         const [inserted] = await tx
@@ -155,17 +254,7 @@ export function createDrizzleRoundRepository(options: {
         await tx.insert(roundTexts).values(
           languages.flatMap((language) => {
             const text = round.texts[language];
-            if (text === undefined) return [];
-            return [
-              {
-                roundId: inserted.id,
-                language,
-                question: text.question,
-                answer: text.answer,
-                answerKey: answerKey(text.answer),
-                aliases: text.aliases,
-              },
-            ];
+            return text === undefined ? [] : [toTextRow(inserted.id, language, text)];
           }),
         );
 
@@ -243,6 +332,177 @@ export function createDrizzleRoundRepository(options: {
         .where(eq(rounds.topic, topic))
         .orderBy(asc(rounds.id), asc(roundTexts.language));
       return rows.flatMap((row) => row.aliases);
+    },
+
+    async list(filter, page) {
+      const db = open();
+      /** A text row of *this* round, for the two per-language questions below. */
+      const ownText = (language: LanguageId) =>
+        db
+          .select({ one: sql`1` })
+          .from(roundTexts)
+          .where(and(eq(roundTexts.roundId, rounds.id), eq(roundTexts.language, language)));
+
+      const conditions: SQL[] = [];
+      if (filter.topic !== undefined) conditions.push(eq(rounds.topic, filter.topic));
+      if (filter.kind !== undefined) conditions.push(eq(rounds.kind, filter.kind));
+      if (filter.language !== undefined) conditions.push(exists(ownText(filter.language)));
+      if (filter.missingLanguage !== undefined) conditions.push(notExists(ownText(filter.missingLanguage)));
+
+      const term = filter.search?.trim() ?? "";
+      if (term !== "") {
+        const pattern = containing(term);
+        const answered = db
+          .select({ one: sql`1` })
+          .from(roundTexts)
+          .where(and(eq(roundTexts.roundId, rounds.id), ilike(roundTexts.answer, pattern)));
+        conditions.push(or(ilike(rounds.subject, pattern), exists(answered))!);
+      }
+      const where = conditions.length > 0 ? and(...conditions) : undefined;
+
+      const [[counted], rows] = await Promise.all([
+        db.select({ n: count() }).from(rounds).where(where),
+        db
+          .select(recordColumns)
+          .from(rounds)
+          .where(where)
+          .orderBy(desc(rounds.id))
+          .limit(page.limit)
+          .offset(page.offset),
+      ]);
+
+      const texts = await textsForAll(
+        db,
+        rows.map((row) => row.id),
+      );
+      return {
+        rounds: rows.map((row) => toRecord(row, texts.get(row.id) ?? {})),
+        total: counted?.n ?? 0,
+      };
+    },
+
+    async get(id) {
+      return recordFor(open(), id);
+    },
+
+    async update(id, patch) {
+      return await open().transaction(async (tx) => {
+        const [current] = await tx
+          .select({ topic: rounds.topic })
+          .from(rounds)
+          .where(eq(rounds.id, id))
+          .limit(1);
+        if (current === undefined) return { ok: false, reason: "not_found" } as const;
+
+        // The same lock `insert` takes, on the shelf the round will be on:
+        // the fill tool may be banking into this topic right now, and the
+        // clash check below has to see its round or be seen by its check.
+        const topic = patch.topic ?? current.topic;
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${topic}))`);
+
+        const merged = await textsFor(id, tx);
+        const patched = Object.entries(patch.texts ?? {}) as [LanguageId, BankedRoundText | null][];
+        for (const [language, text] of patched) {
+          if (text === null) delete merged[language];
+          else merged[language] = text;
+        }
+        const languages = Object.keys(merged) as LanguageId[];
+        if (languages.length === 0) return { ok: false, reason: "no_texts" } as const;
+
+        // A clash is checked where this edit could have made one: the
+        // languages it rewrote, or all of them when the round is moving to
+        // another shelf. An untouched language on an unmoved round cannot
+        // clash with anything it did not already clash with — and `insert`
+        // saw to it that it never did.
+        const moved = topic !== current.topic;
+        const check = moved ? languages : patched.flatMap(([language]) => (merged[language] ? [language] : []));
+        for (const language of check) {
+          const text = merged[language];
+          if (text === undefined) continue;
+          const clash = await clashFor(tx, topic, language, text.answer, id);
+          if (clash !== null) {
+            return { ok: false, reason: "duplicate", language, answer: clash.answer, roundId: clash.id } as const;
+          }
+        }
+
+        const set: Partial<typeof rounds.$inferInsert> = {};
+        if (patch.topic !== undefined) set.topic = patch.topic;
+        if (patch.subject !== undefined) set.subject = patch.subject;
+        if (patch.imageFile !== undefined) set.imageFile = patch.imageFile;
+        if (patch.sourceUrl !== undefined) set.sourceUrl = patch.sourceUrl;
+        if (patch.snippet !== undefined) set.snippet = patch.snippet;
+        if (patch.snippetLanguage !== undefined) set.snippetLanguage = patch.snippetLanguage;
+        if (Object.keys(set).length > 0) {
+          await tx.update(rounds).set(set).where(eq(rounds.id, id));
+        }
+
+        if (patched.length > 0) {
+          // Replaced rather than updated in place: a language row is small,
+          // and delete-then-insert is one shape for "changed", "added" and
+          // "removed" alike.
+          await tx.delete(roundTexts).where(
+            and(
+              eq(roundTexts.roundId, id),
+              inArray(
+                roundTexts.language,
+                patched.map(([language]) => language),
+              ),
+            ),
+          );
+          const inserts = patched.flatMap(([language, text]) =>
+            text === null ? [] : [toTextRow(id, language, text)],
+          );
+          if (inserts.length > 0) await tx.insert(roundTexts).values(inserts);
+        }
+
+        return { ok: true } as const;
+      });
+    },
+
+    async delete(id) {
+      return await open().transaction(async (tx) => {
+        const record = await recordFor(tx, id);
+        if (record === null) return null;
+        // The texts go with it: the foreign key cascades.
+        await tx.delete(rounds).where(eq(rounds.id, id));
+        return record;
+      });
+    },
+
+    async imageReferences(imageFile) {
+      const [row] = await open()
+        .select({ n: count() })
+        .from(rounds)
+        .where(eq(rounds.imageFile, imageFile));
+      return row?.n ?? 0;
+    },
+
+    async stock() {
+      const db = open();
+      const [perTopic, perLanguage] = await Promise.all([
+        db.select({ topic: rounds.topic, n: count() }).from(rounds).groupBy(rounds.topic),
+        db
+          .select({ topic: rounds.topic, language: roundTexts.language, n: count() })
+          .from(rounds)
+          .innerJoin(roundTexts, eq(roundTexts.roundId, rounds.id))
+          .groupBy(rounds.topic, roundTexts.language),
+      ]);
+
+      const byTopic = new Map<string, TopicStock>();
+      const shelf = (topic: string): TopicStock => {
+        let own = byTopic.get(topic);
+        if (own === undefined) {
+          own = { topic: topic as TopicId, rounds: 0, counts: {} };
+          byTopic.set(topic, own);
+        }
+        return own;
+      };
+      // Catalogue first, so the order is the one every other screen uses;
+      // whatever the bank holds beyond it follows in its own order.
+      for (const topic of ALL_TOPIC_IDS) shelf(topic);
+      for (const row of perTopic) shelf(row.topic).rounds = row.n;
+      for (const row of perLanguage) shelf(row.topic).counts[row.language as LanguageId] = row.n;
+      return [...byTopic.values()];
     },
 
     async close() {

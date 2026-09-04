@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { mkdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Readable } from "node:stream";
 
@@ -49,6 +49,55 @@ export function imageContentType(filename: string): string | null {
   return CONTENT_TYPES[filename.slice(filename.indexOf(".") + 1)] ?? null;
 }
 
+/**
+ * The most a picture may weigh on its way into the bank. Big enough for any
+ * 1200px Commons render, small enough to refuse an archive scan — and one
+ * number for the fill tool's download and the admin's upload alike, because
+ * a picture the bank would not accept from one it should not accept from the
+ * other.
+ */
+export const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+
+const startsWith = (bytes: Uint8Array, prefix: number[], offset = 0): boolean =>
+  prefix.every((expected, index) => bytes[offset + index] === expected);
+
+/**
+ * What image format these bytes are, by their magic numbers — the one thing
+ * an error page served with `content-type: image/png` cannot fake, and the
+ * one thing a file picker's extension cannot either. Every picture the bank
+ * stores has been through this, whichever process brought it.
+ */
+export function sniffImage(
+  bytes: Uint8Array,
+): { contentType: string; extension: string } | null {
+  if (bytes.length < 12) return null;
+
+  if (startsWith(bytes, [0x89, 0x50, 0x4e, 0x47])) {
+    return { contentType: "image/png", extension: "png" };
+  }
+  if (startsWith(bytes, [0xff, 0xd8, 0xff])) {
+    return { contentType: "image/jpeg", extension: "jpg" };
+  }
+  if (startsWith(bytes, [0x47, 0x49, 0x46, 0x38])) {
+    return { contentType: "image/gif", extension: "gif" };
+  }
+  if (startsWith(bytes, [0x52, 0x49, 0x46, 0x46]) && startsWith(bytes, [0x57, 0x45, 0x42, 0x50], 8)) {
+    return { contentType: "image/webp", extension: "webp" };
+  }
+
+  // SVG is text, so the check is for a document that *is* an svg element —
+  // not merely one that contains one, which every HTML error page with an
+  // inline icon does.
+  const head = new TextDecoder("utf-8", { fatal: false })
+    .decode(bytes.slice(0, 1024))
+    .trimStart();
+  if (/^(<\?xml[^>]*>\s*)?(<!--[\s\S]*?-->\s*)*(<!DOCTYPE svg[^>]*>\s*)?<svg[\s>]/i.test(head)) {
+    return { contentType: "image/svg+xml", extension: "svg" };
+  }
+
+  return null;
+}
+
 /** A stored picture, opened for streaming straight into a response. */
 export interface StoredImage {
   contentType: string;
@@ -75,6 +124,14 @@ export interface ImageStore {
    * thing and deserves a different status.
    */
   open(filename: string): Promise<StoredImage | null>;
+  /**
+   * Removes a stored picture. Quiet about one that is already gone, and about
+   * a name this store never issued — there is nothing to remove under either,
+   * and the caller has just deleted the round that pointed at it. Only the
+   * admin calls this, and only once `imageReferences` says the picture is
+   * nobody else's.
+   */
+  delete(filename: string): Promise<void>;
 }
 
 /** The SHA-256 name a picture will be stored under. */
@@ -126,6 +183,15 @@ export function createDiskImageStore(dir: string): ImageStore {
         throw error;
       }
       return { contentType, contentLength, body: createReadStream(path) };
+    },
+
+    async delete(filename) {
+      if (imageContentType(filename) === null) return;
+      try {
+        await unlink(join(dir, filename));
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
     },
   };
 }

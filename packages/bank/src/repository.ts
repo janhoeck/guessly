@@ -55,6 +55,80 @@ export interface BankedRound {
 
 export type NewBankedRound = Omit<BankedRound, "id">;
 
+/**
+ * A round with its ledger: when it was banked and how often it has been
+ * dealt. What the admin reads, and deliberately not what `draw` returns —
+ * the game has no use for the numbers, and `NewBankedRound` is derived from
+ * `BankedRound`, so putting them there would make every insert carry a
+ * served count it does not own.
+ */
+export interface BankedRoundRecord extends BankedRound {
+  createdAt: number;
+  timesServed: number;
+  lastServedAt: number | null;
+}
+
+/**
+ * Which rounds to list. Every field narrows; none is required. `language`
+ * and `missingLanguage` are the two ends of the same question — what could a
+ * German lobby be dealt, and what could it not — and the second is the
+ * backfill queue the catalogue's Open Questions describe, made visible.
+ */
+export interface RoundFilter {
+  topic?: TopicId;
+  kind?: RoundKind;
+  /** Only rounds written in this language. */
+  language?: LanguageId;
+  /** Only rounds *not* written in this language. */
+  missingLanguage?: LanguageId;
+  /** Case-insensitive, anywhere in the subject or in any language's answer. */
+  search?: string;
+}
+
+export interface RoundPage {
+  /** Newest first. */
+  rounds: BankedRoundRecord[];
+  /** How many match the filter in all, so a page can say where it is. */
+  total: number;
+}
+
+/**
+ * An edit. Every field is optional and only the named ones change; `texts`
+ * is per language, and a language set to `null` is removed from the round.
+ * `kind` is not here on purpose — a picture cannot become a paraphrase, and a
+ * round that has to change kind is a round to delete and refill.
+ */
+export interface RoundPatch {
+  topic?: TopicId;
+  subject?: string;
+  imageFile?: string | null;
+  sourceUrl?: string | null;
+  snippet?: string | null;
+  snippetLanguage?: string | null;
+  texts?: Partial<Record<LanguageId, BankedRoundText | null>>;
+}
+
+/**
+ * Why an edit did not land, named so the editor can say so. `duplicate`
+ * quotes the round in the way: the topic already answers to this word in
+ * this language, and the same rule that stops the fill tool banking it twice
+ * stops an edit from making it so.
+ */
+export type RoundUpdateResult =
+  | { ok: true }
+  | { ok: false; reason: "not_found" }
+  | { ok: false; reason: "no_texts" }
+  | { ok: false; reason: "duplicate"; language: LanguageId; answer: string; roundId: number };
+
+/** One topic's shelf: how many rounds it holds, and how many each language could be dealt. */
+export interface TopicStock {
+  topic: TopicId;
+  /** Every round on the shelf, whatever languages it was written in. */
+  rounds: number;
+  /** Per language, the rounds a lobby in it could actually be dealt. */
+  counts: Partial<Record<LanguageId, number>>;
+}
+
 export interface RoundRepository {
   /** Opens the store and applies the schema. Everything else may assume it ran. */
   init(): Promise<void>;
@@ -108,6 +182,42 @@ export interface RoundRepository {
    * the duplicate check knows a round already answers to that name.
    */
   aliases(topic: TopicId): Promise<string[]>;
+
+  // The admin's half: reading the shelf as a shelf, and changing what is on
+  // it. The game never calls any of these — it draws and nothing else.
+
+  /** A page of rounds, newest first, narrowed by `filter`. */
+  list(filter: RoundFilter, page: { offset: number; limit: number }): Promise<RoundPage>;
+  /** One round with every language it holds, or null. */
+  get(id: number): Promise<BankedRoundRecord | null>;
+  /**
+   * Applies a patch. Refused whole — nothing written — when it would leave
+   * the round with no language at all, or when a changed answer is one the
+   * topic already holds in that language on another round. Moving a round to
+   * a new topic re-checks every language against the new shelf.
+   */
+  update(id: number, patch: RoundPatch): Promise<RoundUpdateResult>;
+  /**
+   * Removes a round and its texts, and hands back what was removed so the
+   * caller can tidy up after it — the picture, if nothing else still points
+   * at it (see `imageReferences`). Null when there was nothing to remove.
+   */
+  delete(id: number): Promise<BankedRoundRecord | null>;
+  /**
+   * How many rounds show this picture. Content addressing means two rounds
+   * with the same bytes share one object, so a round's deletion may only
+   * take the picture with it when this says nobody else is looking at it.
+   */
+  imageReferences(imageFile: string): Promise<number>;
+  /**
+   * Every topic's shelf at once, in catalogue order — what the fill tool
+   * gauges topic by topic, read in two queries rather than one per cell.
+   * A topic the catalogue no longer names but the bank still holds is listed
+   * after the catalogue: rounds nobody can be dealt are exactly what an
+   * operator needs to see.
+   */
+  stock(): Promise<TopicStock[]>;
+
   close(): Promise<void>;
 }
 

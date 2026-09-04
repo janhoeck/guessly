@@ -13,10 +13,10 @@ import {
 
 import { LobbyPresence } from "@/components/lobby/lobby-presence"
 import { useLobby } from "@/components/lobby/use-lobby"
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
-import { Separator } from "@/components/ui/separator"
+import { Button } from "@guessly/ui/components/ui/button"
+import { Input } from "@guessly/ui/components/ui/input"
+import { Label } from "@guessly/ui/components/ui/label"
+import { Separator } from "@guessly/ui/components/ui/separator"
 
 /**
  * Nickname, then the two ways in: make a lobby, or join one with its code.

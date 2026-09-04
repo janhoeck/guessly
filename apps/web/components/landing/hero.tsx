@@ -3,7 +3,7 @@ import {
   ROUND_DURATION_MS,
 } from "@guessly/protocol"
 
-import { Wordmark } from "@/components/site/wordmark"
+import { Wordmark } from "@guessly/ui/components/wordmark"
 
 /**
  * The page's thesis, in three lines: what this is, who it is for, and the one

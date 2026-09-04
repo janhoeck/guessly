@@ -1,7 +1,7 @@
 import * as React from "react"
 import Link from "next/link"
 
-import { cn } from "@/lib/utils"
+import { cn } from "@guessly/ui/lib/utils"
 
 /**
  * The site's own navigation: the two places that are not a room.

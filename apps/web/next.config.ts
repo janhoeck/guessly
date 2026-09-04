@@ -5,7 +5,7 @@ const nextConfig: NextConfig = {
    * The web tier is stateless: it renders UI and talks to the game server over
    * a socket. Nothing here should introduce server-held game state.
    */
-  transpilePackages: ["@guessly/protocol"],
+  transpilePackages: ["@guessly/protocol", "@guessly/ui"],
 
   /**
    * `next dev` otherwise writes its own AGENTS.md and CLAUDE.md into this

@@ -3,7 +3,7 @@
 import { MinusIcon, PlusIcon } from "lucide-react"
 import { MAX_TARGET_SCORE, MIN_TARGET_SCORE } from "@guessly/protocol"
 
-import { Button } from "@/components/ui/button"
+import { Button } from "@guessly/ui/components/ui/button"
 
 /**
  * How many points win the game.

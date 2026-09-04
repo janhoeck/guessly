@@ -5,7 +5,7 @@ import {
   ROUND_DURATION_MS,
 } from "@guessly/protocol"
 
-import { cn } from "@/lib/utils"
+import { cn } from "@guessly/ui/lib/utils"
 
 /**
  * The round loop, in the order it happens.

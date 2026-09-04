@@ -4,7 +4,7 @@ import * as React from "react"
 import { CheckIcon } from "lucide-react"
 import { LANGUAGES, languageById, type LanguageId } from "@guessly/protocol"
 
-import { Button } from "@/components/ui/button"
+import { Button } from "@guessly/ui/components/ui/button"
 
 /**
  * What language the rounds are written in.

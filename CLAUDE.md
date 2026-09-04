@@ -131,7 +131,9 @@ which is what an empty German shelf looks like until a fill run stocks it.
 
 **Images are self-hosted, in a private bucket.** The generator downloads the
 picture — whole file, capped, format verified by magic bytes rather than by
-anybody's content-type header — and the bank stores it content-addressed
+anybody's content-type header; the check and the cap are the bank's own
+(`sniffImage`, `MAX_IMAGE_BYTES`), so the admin's upload passes the same
+one — and the bank stores it content-addressed
 (SHA-256 name) in S3-compatible object storage, from where the game server
 reads it and serves it at its own origin's `/img/<hash>.<ext>`. Players never
 load from a third-party host, so hotlink blocks, CORS and link rot cannot kill
@@ -433,27 +435,35 @@ against the keyboards that cannot type it.
 
 ## Architecture
 
-Two long-running processes plus an on-demand service, in a pnpm workspace
+Three long-running processes plus an on-demand service, in a pnpm workspace
 driven by Turborepo:
 
 ```
 apps/web/           # Next.js app. Renders UI. Holds no game state.
 apps/game/          # Node + Socket.IO server. Owns all lobby state, in memory.
                     # Reads the round bank; carries nothing on disk.
+apps/admin/         # Next.js app, behind a password. Reads and edits the round
+                    # bank: the operator's view of every picture and paraphrase.
 tools/fill/         # The fill service: the only process that calls the AI.
                     # Writes the round bank the game server reads.
 packages/protocol/  # Shared TypeScript types for every socket event.
 packages/bank/      # The round bank: repository, Drizzle schema, Postgres,
-                    # S3 image store — the seam apps/game and tools/fill share
-                    # instead of each other.
+                    # S3 image store — the seam apps/game, tools/fill and
+                    # apps/admin share instead of each other.
+packages/ui/        # The design system: theme, fonts, every shadcn component
+                    # and the wordmark — what apps/web and apps/admin render
+                    # with instead of each carrying a copy.
 ```
 
 `packages/protocol` and `packages/bank` compile to `dist`; turbo builds them
 before anything that depends on them and keeps them in watch mode behind the
-servers in dev. Everything runs from the root: `pnpm dev`, `pnpm build`,
-`pnpm lint`, `pnpm typecheck`, `pnpm test` — and `pnpm fill`, which runs the
-fill service until Ctrl+C. Each is a turbo task graph, so a package is only
-rebuilt when its own inputs change.
+servers in dev. `packages/ui` has no build at all: it ships its `.tsx` source
+and each Next app compiles it through `transpilePackages`, because a
+`"use client"` directive, a `next/font` call and Tailwind's class scanning
+all want the source rather than an emit of it. Everything runs from the root:
+`pnpm dev`, `pnpm build`, `pnpm lint`, `pnpm typecheck`, `pnpm test` — and
+`pnpm fill`, which runs the fill service until Ctrl+C. Each is a turbo task
+graph, so a package is only rebuilt when its own inputs change.
 
 The web tier is stateless and the game server is stateful, so they are kept apart
 from the start: scaling the web tier can never fork lobby state, and going public
@@ -473,11 +483,13 @@ needs a Postgres (`DATABASE_URL`) and, for its images, an S3-compatible bucket
 (`S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`) — no
 volume, and nothing on the container's disk to lose. `PUBLIC_BASE_URL` must be
 the origin players reach the game server on, because banked image URLs are
-built from it.
+built from it. The admin is a third deployable on the same database and
+bucket, plus `ADMIN_PASSWORD`; it is optional, and nothing else knows
+whether it is running.
 
-**Dev:** `pnpm dev` at the root runs both — web on :3000, game server on :3001.
-The client connects via `NEXT_PUBLIC_SOCKET_URL`. Socket.IO gets an explicit
-origin allowlist, never `*`.
+**Dev:** `pnpm dev` at the root runs all three — web on :3000, game server on
+:3001, admin on :3002. The client connects via `NEXT_PUBLIC_SOCKET_URL`.
+Socket.IO gets an explicit origin allowlist, never `*`.
 
 **Configuration** is read once at boot, by `apps/game/src/config.ts` for the
 server and `tools/fill/src/config.ts` for the fill service — which is where
@@ -490,14 +502,19 @@ variables properly and ships no `.env` at all.
 
 Turbo runs tasks in **strict env mode**, which means a variable the shell
 exports does not reach a task unless `turbo.json` names it. `PORT`,
-`CORS_ORIGINS`, `DATABASE_URL`, the four `S3_*` variables and
-`PUBLIC_BASE_URL` are listed under `passThroughEnv` on `dev` and `start`, and
-`DEEPSEEK_API_KEY`, `DEEPSEEK_MODEL`, `DEEPSEEK_REASONING_EFFORT`,
+`CORS_ORIGINS`, `DATABASE_URL`, the four `S3_*` variables, `PUBLIC_BASE_URL`
+and `ADMIN_PASSWORD` are listed under `passThroughEnv` on `dev` and `start`,
+and `DEEPSEEK_API_KEY`, `DEEPSEEK_MODEL`, `DEEPSEEK_REASONING_EFFORT`,
 `DATABASE_URL` and the same `S3_*` on `fill` — passed through
 rather than hashed, because they are runtime configuration and some of them
 are secrets. A new runtime variable has to be added there or it will silently
 go missing. `DATA_DIR` survives on the `migrate:images` task alone, which is
 the only thing left that wants to know where the pictures used to be.
+
+The admin reads its configuration the Next way — `apps/admin/.env` is loaded
+by Next itself — and then, in `lib/config.ts`, reads `apps/game/.env` as a
+fallback for the bank's whereabouts, exactly as the fill tool does and for
+the same reason. `ADMIN_PASSWORD` has no fallback: it is the admin's alone.
 
 **Lobbies are memory; content is an asset.** Lobby state lives in the game
 server's process and dies with it — deliberately, see Lobbies. The round bank
@@ -506,9 +523,89 @@ in `packages/bank` — written async so what is behind it stays swappable for
 one new file rather than a change to any caller. Nothing outside
 `packages/bank` knows what is plugged in. Two tables: `rounds` is what was photographed and
 how often it has been dealt, `round_texts` is what each language asks and
-accepts about it. The server and the fill service are two processes on the
-one database, so `insert` checks and writes under a transaction-scoped
-advisory lock on the topic — two polite writers instead of one surprised one.
+accepts about it. The server, the fill service and the admin are three
+processes on the one database, so `insert` — and the admin's `update` —
+check and write under a transaction-scoped advisory lock on the topic:
+polite writers instead of surprised ones.
+
+## Admin
+
+`apps/admin` is the back room: a Next.js app that reads the bank as a shelf
+and lets an operator change what is on it. It is the **third process on the
+one database and the one bucket** — it depends on `@guessly/bank` exactly as
+the game server and the fill tool do, and on nothing of theirs. It never
+generates a round: what it can do is see, fix, replace and remove.
+
+**Behind one password.** `ADMIN_PASSWORD` is required, and `proxy.ts` stands
+at the door for every request but the login page's own: a signed session
+cookie or nothing. The cookie carries no secret — an expiry stamped with an
+HMAC keyed off the password (`lib/session.ts`, Web Crypto so the proxy and
+the actions run the same code) — so it lasts a week, cannot be forged, and
+changing the password signs everybody out. A page you are not signed in for
+is sent to sign in and back; a picture or a form post is refused with a 401,
+because a redirect is not an answer an `<img>` can act on. Every server
+action checks again for itself, because a write that trusted the door alone
+is one misconfigured matcher away from open.
+
+**Pictures come from the admin's own origin**, at `/img/<hash>.<ext>` like the
+game's, because the bucket is private and the admin holds the key. The route
+streams the object and marks it `private, immutable`: content-addressed, so
+forever, but behind a sign-in, so never a shared cache's to hand on.
+
+**An edit is a patch that names only what changed.** `lib/form.ts` reads the
+editor's form against the round as it is and emits the difference — a pure
+function, so what counts as a valid round is argued in a test and the
+sentence it refuses with is the sentence the operator reads. The rules:
+
+- **A language is present when it has a question and an answer.** Clearing
+  both drops it; filling both on an empty card adds it — which is the manual
+  backfill the Open Questions describe. A half-written card is refused by
+  name, and so is a form that would leave no language at all.
+- **An edit cannot make a duplicate.** `update` checks a changed answer
+  against the topic's shelf in that language the way `insert` does, and
+  refuses whole, naming the round in the way. Moving a round to another
+  topic re-checks every language against the new shelf.
+- **A round cannot change what it shows.** `RoundPatch` has no `kind`, and
+  the editor only offers topics of the round's own kind: a picture that
+  should have been lyrics is a round to delete and refill.
+- **Limits are the fill parser's.** Subject, question, answer, alias count
+  and snippet length mirror `tools/fill/src/content/schema.ts`, because an
+  operator's round has to fit the same stage the model's does.
+
+**A replaced picture goes through the same check as a downloaded one.**
+`sniffImage` and `MAX_IMAGE_BYTES` moved from the fill tool into the bank
+for this: what the bank will hold is the bank's rule, and an upload is
+verified by its bytes, never by its name or the browser's type. The new
+object is saved, the round is pointed at it, and the old one is deleted
+only when `imageReferences` says no other round shows it — content
+addressing means two rounds with the same bytes share one object.
+**Deleting a round** takes its texts by cascade and its picture by the same
+rule. The bucket's housekeeping is logged rather than shown when it fails:
+the round was already saved or already gone, and that is the news.
+
+**The bank is loaded, not bundled.** `@guessly/bank` finds its migrations
+relative to its own file, and a copy of it inside a Next chunk would look for
+them beside the chunk. `serverExternalPackages` cannot keep a workspace
+package out of the bundle — it only reaches packages that live in
+`node_modules` for real — so `lib/bank.ts` is the one place the package's
+values are imported, with a native `import()` both bundlers are told to leave
+alone. Everything else imports its *types*, which cost nothing. The bank is
+opened on the first request that needs it and parked on `globalThis`, because
+`next dev` reloads server modules on every edit and a module variable would
+be a fresh pool, a fresh `HeadBucket` and a fresh migration run each time.
+
+**The filter is the URL.** `/rounds?topic=…&kind=…&language=…&q=…&page=…`
+is read and written by `lib/query.ts` alone, so a page of rounds is a link
+and the filter form is a plain GET form: the URL is its state, the browser
+does the submitting, and the only script in it is shadcn's Select on the
+three dropdowns, which carries its choice into the GET through the hidden
+native `<select>` Radix renders beside it. The
+language question has four answers — written in one, or missing one — and
+the shelves page links straight to the missing ones, because a round
+missing German is a job, not a statistic. Pages compose and hold nothing;
+the islands are the forms, each around its own server action, and the
+fields are uncontrolled with the round as their default, so the admin keeps
+no copy of anything the server did not just send.
 
 ## Web UI
 
@@ -526,13 +623,46 @@ server untouched. New screens follow the same shape — find the control that
 needs to react, and stop the client boundary there.
 
 **Components are reusable and semantic.** One component per job, split so a
-future screen can take the piece it needs: `components/ui/` is shadcn-generated
-(never hand-edited — override at the call site with `className`, so `shadcn add`
-keeps working), `components/site/` is chrome shared across every screen, and
-`components/<route>/` is route-specific. Markup uses the real element —
+future screen can take the piece it needs: `packages/ui/src/components/ui/` is
+shadcn-generated (never hand-edited — override at the call site with
+`className`, so `shadcn add` keeps working), `components/site/` is chrome
+shared across one app's screens, and `components/<route>/` is route-specific.
+Markup uses the real element —
 `<main>`, `<footer>`, `<form>`, `<label>`, `<ol>` — and anything purely
 decorative is `aria-hidden` so it does not narrate a fake scoreboard to a screen
 reader.
+
+**The design system is a package, and nothing in it is copied.** `@guessly/ui`
+holds what both Next apps would otherwise carry twice: the theme
+(`src/styles/globals.css`), the two faces (`src/fonts.ts`), `cn`, every
+shadcn component and the wordmark. A root layout imports the stylesheet and
+puts `fontVariables` on `<html>`, and that is the whole of what an app does to
+be dressed like Guessly — the admin is the game's own chrome in a different
+room, and it got there without a second `globals.css` to drift. Three things
+about the package are rules rather than layout:
+
+- **Its stylesheet names its own components.** Tailwind scans from the app
+  that compiles the CSS, and the package sits outside it, so the
+  `@source "../components"` at the top of `globals.css` is what generates the
+  classes the buttons are made of. Delete it and every control silently loses
+  its styling rather than failing.
+- **`shadcn add` is run in the package, never in an app.** `pnpm shadcn add
+  <name>` at the root does exactly that: the package has its own
+  `components.json`, so the file lands in `src/components/ui/` and whatever
+  the registry item depends on lands in the package's `package.json`. Both
+  apps' `components.json` still alias `ui` and `utils` to `@guessly/ui`, as
+  shadcn's monorepo layout asks, but running the CLI *from* an app is a trap
+  on Windows: it writes the file into the package and installs the dependency
+  into the app, because its package-root lookup compares a backslash path
+  against forward-slash glob output and never matches. Note that the current
+  registry imports `cn` from shadcn's own `cn` npm package rather than from
+  `lib/utils`; the components already here predate that, and both are the
+  same helper. Whether `lib/utils` should simply re-export it is undecided.
+- **A dependency a component needs is the package's.** `radix-ui`, `sonner`,
+  `lucide-react` and the class helpers live in `packages/ui/package.json`; an
+  app lists only what its *own* code imports (the web app still imports icons
+  and `toast` directly). Chrome that is genuinely one app's — the site header,
+  the admin header, its `Field` — stays in that app's `components/`.
 
 **Numbers in copy come from `@guessly/protocol`**, not from the sentence.
 `ROUND_DURATION_MS`, `NICKNAME_MAX_LENGTH`, `MAX_PLAYERS_PER_LOBBY` and
@@ -600,11 +730,12 @@ callback — and `lobby-client.ts` owns the toast. Notices go there rather than
 into a component because the transition can land mid-navigation, and the
 connection is the only thing on this side that does not unmount.
 
-**Design system:** dark only, tokens in `app/globals.css` — read the comments
-there before touching a value, and run `pnpm test` after. The yellow `--primary`
-is the single call to action on a screen; `--brand-cyan` and `--brand-pink` are
-decorative only (rules, indicators, plates), never text and never a hover
-surface.
+**Design system:** dark only, tokens in `packages/ui/src/styles/globals.css` —
+read the comments there before touching a value, and run `pnpm test` after: the
+contrast guard (`theme-contrast.test.ts`) lives beside the stylesheet, in the
+package. The yellow `--primary` is the single call to action on a screen;
+`--brand-cyan` and `--brand-pink` are decorative only (rules, indicators,
+plates), never text and never a hover surface.
 
 The browse list is the one screen with more than one yellow button, and it is
 not an exception to the rule so much as the rule read literally: every joinable
@@ -877,16 +1008,22 @@ than a throw, and through `wikimedia.ts`'s own parsing — a real API payload
 read into candidates, which is where an article's sister-project logos, its
 audio file and its 20px interface icons have to stop being offered as
 pictures of the subject. Both are pure functions of a payload, so neither
-test touches the network. The bank is tested from both of its ends, each in its own
+test touches the network. The bank is tested from all three of its ends, each in its own
 package: `packages/bank`'s `postgres.test.ts` runs the real repository — the
 same Drizzle queries and migrations as production — against PGlite, Postgres
 compiled to WASM rather than an imitation of it, booted once per process and
-wiped clean for every test; the game's `bank/source.test.ts` drives the
-consuming side —
+wiped clean for every test, and `admin.test.ts` runs the admin's half of it
+the same way — listing and searching, the edit that may not make a duplicate
+or leave a round with no language, the deletion that hands back what it
+removed, and the picture two rounds share; the game's `bank/source.test.ts`
+drives the consuming side —
 draws, cross-language aliases, and the misses that fail a round — against it;
 and `tools/fill`'s `fill.test.ts` drives the producing side — thinnest shelf
 first, exclusion lists, benching and backoff — with a stub generator and a
-fake image store.
+fake image store. The admin's own tests are the pure parts of it: `form.ts`,
+where "would the bank take this round?" is argued sentence by sentence,
+`query.ts`, where the URL round-trips, and `session.ts`, where a moved
+expiry and a changed password are both refused.
 
 The image store is tested where it can be. A bucket cannot be booted in a test
 the way Postgres can, so `packages/bank`'s `images.test.ts` argues the two
@@ -915,13 +1052,15 @@ These are deliberately not decided yet. Ask before assuming an answer:
   `MIN_PLAYERS_TO_START` can never start again, which the page says out loud.
   Whether `finished` should open the door (it is a setup phase now, and the
   code on the results header is as readable-out as ever) is undecided.
-- **Nothing backfills a language added later.** A new entry in the catalogue is
-  all the schema, the tool and the UI need — but every round already banked was
-  written without it, and `draw` passes those over, so the new language starts
-  on an empty shelf and fills only as it is played. A backfill pass that asked
-  the generator for the missing entry of a round it already has the picture for
-  would be cheap and is unwritten; whether it is worth writing depends on how
-  often a language is added, which is so far never.
+- **Nothing backfills a language added later — automatically.** A new entry
+  in the catalogue is all the schema, the tool and the UI need — but every
+  round already banked was written without it, and `draw` passes those over,
+  so the new language starts on an empty shelf and fills only as it is
+  played. The admin shows the queue (`/rounds?language=missing:<id>`) and
+  lets an operator write the missing text one round at a time; a backfill
+  pass that asked the generator for it instead would be cheap and is
+  unwritten. Whether it is worth writing depends on how often a language is
+  added, which is so far never.
 - **Every lobby is listed, and none of them chose to be.** `/lobbies` shows
   whatever exists, so a group who only meant to play among themselves is
   discoverable by a stranger who reloads at the right moment. Nothing is opened
@@ -929,8 +1068,15 @@ These are deliberately not decided yet. Ask before assuming an answer:
   full lobby still refuses — but an unlisted flag is an obvious thing to want
   and is unwritten. Whether it is worth having depends on whether strangers turn
   out to be the point of the page or the problem with it.
-- **The bank has no curator** — nothing retires a round nobody solves, nothing
-  turns near-miss guesses into aliases, and nothing decides how deep a topic's
-  shelf *should* be: the fill tool fills evenly for as long as it runs. The
-  play data to drive all three exists per round and is currently thrown away
-  at reveal.
+- **The bank has no curator but a person.** The admin lets an operator retire
+  a round, add an alias and see how often each round has been dealt — but
+  nothing *automatic* retires a round nobody solves, turns near-miss guesses
+  into aliases, or decides how deep a topic's shelf *should* be: the fill tool
+  fills evenly for as long as it runs. The play data to drive all three
+  exists per round and is currently thrown away at reveal, so the admin
+  cannot show it either.
+- **The admin creates nothing.** It edits, replaces and deletes, and the fill
+  tool is still the only way a round is born. A hand-made round — a picture
+  uploaded from scratch with its texts typed in — is the obvious next thing
+  the editor could do and is unwritten; whether it is worth writing depends
+  on whether the fill tool's misses turn out to be fixable ones.

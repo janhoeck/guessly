@@ -3,7 +3,7 @@ import { Hero } from "@/components/landing/hero"
 import { HowItWorks } from "@/components/landing/how-it-works"
 import { RoundPreview } from "@/components/landing/round-preview"
 import { SiteHeader } from "@/components/site/site-header"
-import { Wordmark } from "@/components/site/wordmark"
+import { Wordmark } from "@guessly/ui/components/wordmark"
 
 /**
  * The landing page: a server component that only composes. No state, no socket,

@@ -1,8 +1,8 @@
 import * as React from "react"
 
 import { EntryForm } from "@/components/landing/entry-form"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { cn } from "@/lib/utils"
+import { Card, CardContent, CardHeader, CardTitle } from "@guessly/ui/components/ui/card"
+import { cn } from "@guessly/ui/lib/utils"
 
 /**
  * The card the entry form sits in. Chrome only — it holds no state and takes no

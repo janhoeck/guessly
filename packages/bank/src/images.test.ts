@@ -1,9 +1,9 @@
 import { createHash, randomBytes } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createDiskImageStore, imageContentType, imageFilename } from "./images.js";
+import { createDiskImageStore, imageContentType, imageFilename, sniffImage } from "./images.js";
 import { readS3Config } from "./s3.js";
 
 /**
@@ -41,6 +41,54 @@ describe("imageContentType", () => {
     expect(imageContentType(`${sixtyFour}.tiff`)).toBeNull();
     expect(imageContentType(sixtyFour)).toBeNull();
     expect(imageContentType("")).toBeNull();
+  });
+});
+
+describe("sniffImage", () => {
+  const padded = (...head: number[]): Uint8Array => {
+    const bytes = new Uint8Array(64);
+    bytes.set(head);
+    return bytes;
+  };
+
+  it("recognises the raster formats by their magic numbers", () => {
+    expect(sniffImage(padded(0x89, 0x50, 0x4e, 0x47))?.extension).toBe("png");
+    expect(sniffImage(padded(0xff, 0xd8, 0xff, 0xe0))?.extension).toBe("jpg");
+    expect(sniffImage(padded(0x47, 0x49, 0x46, 0x38, 0x39, 0x61))?.extension).toBe("gif");
+    expect(
+      sniffImage(padded(0x52, 0x49, 0x46, 0x46, 0x00, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50)),
+    ).toMatchObject({ contentType: "image/webp", extension: "webp" });
+  });
+
+  it("recognises an svg document, xml prolog and all", () => {
+    const svg = new TextEncoder().encode(
+      `<?xml version="1.0"?>\n<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"></svg>`,
+    );
+    expect(sniffImage(svg)).toMatchObject({ contentType: "image/svg+xml", extension: "svg" });
+  });
+
+  it("refuses an html page, even one with an inline svg icon in it", () => {
+    const html = new TextEncoder().encode(
+      `<!DOCTYPE html><html><body><svg width="1" height="1"></svg>Not found</body></html>`,
+    );
+    expect(sniffImage(html)).toBeNull();
+  });
+
+  it("refuses bytes too short to be any picture", () => {
+    expect(sniffImage(new Uint8Array([0x89, 0x50]))).toBeNull();
+  });
+
+  /** Every format it recognises is one the store has a content type for. */
+  it("only ever names an extension the store will serve", () => {
+    for (const bytes of [
+      padded(0x89, 0x50, 0x4e, 0x47),
+      padded(0xff, 0xd8, 0xff),
+      padded(0x47, 0x49, 0x46, 0x38),
+      padded(0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50),
+    ]) {
+      const sniffed = sniffImage(bytes)!;
+      expect(imageContentType(`${"a".repeat(64)}.${sniffed.extension}`)).toBe(sniffed.contentType);
+    }
   });
 });
 
@@ -104,6 +152,28 @@ describe("createDiskImageStore", () => {
 
     expect(await store.has(missing)).toBe(false);
     expect(await store.open(missing)).toBeNull();
+  });
+
+  it("deletes a picture it holds, and shrugs at one it does not", async () => {
+    const store = createDiskImageStore(dir);
+    await store.init();
+    const filename = await store.save({ bytes: randomBytes(32), extension: "png" });
+    expect(await store.has(filename)).toBe(true);
+
+    await store.delete(filename);
+    expect(await store.has(filename)).toBe(false);
+    // Already gone, and a name never issued: neither is anything to report.
+    await expect(store.delete(filename)).resolves.toBeUndefined();
+    await expect(store.delete("../secret.txt")).resolves.toBeUndefined();
+  });
+
+  it("never deletes under a name it would not have issued", async () => {
+    const store = createDiskImageStore(dir);
+    await store.init();
+    await writeFile(join(dir, "keep.txt"), "not a picture");
+
+    await store.delete("keep.txt");
+    await expect(stat(join(dir, "keep.txt"))).resolves.toBeDefined();
   });
 });
 

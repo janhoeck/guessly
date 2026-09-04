@@ -7,8 +7,8 @@ import { isPlaying } from "@guessly/protocol"
 import { useLobby } from "@/components/lobby/use-lobby"
 import { FinalStandings } from "@/components/results/final-standings"
 import { NextGamePanel } from "@/components/results/next-game"
-import { Wordmark } from "@/components/site/wordmark"
-import { Button } from "@/components/ui/button"
+import { Wordmark } from "@guessly/ui/components/wordmark"
+import { Button } from "@guessly/ui/components/ui/button"
 
 /**
  * The results screen, and the only client island on `/<CODE>/results`.

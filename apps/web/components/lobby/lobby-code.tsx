@@ -4,8 +4,8 @@ import * as React from "react"
 import { CheckIcon, CopyIcon } from "lucide-react"
 import { toast } from "sonner"
 
-import { Button } from "@/components/ui/button"
-import { cn } from "@/lib/utils"
+import { Button } from "@guessly/ui/components/ui/button"
+import { cn } from "@guessly/ui/lib/utils"
 
 /**
  * The room code, sized to be read out loud across a table or a voice call.

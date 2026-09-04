@@ -4,10 +4,10 @@ import * as React from "react"
 import { GUESS_MAX_LENGTH, type RoundResult } from "@guessly/protocol"
 
 import type { GuessOutcome } from "@/components/lobby/use-lobby"
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
+import { Button } from "@guessly/ui/components/ui/button"
+import { Input } from "@guessly/ui/components/ui/input"
 import { playSound } from "@/lib/sounds"
-import { cn } from "@/lib/utils"
+import { cn } from "@guessly/ui/lib/utils"
 
 /**
  * The twenty seconds, from the player's side.

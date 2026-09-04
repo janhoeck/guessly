@@ -7,8 +7,8 @@ import {
   type LobbySummary,
 } from "@guessly/protocol"
 
-import { Button } from "@/components/ui/button"
-import { cn } from "@/lib/utils"
+import { Button } from "@guessly/ui/components/ui/button"
+import { cn } from "@guessly/ui/lib/utils"
 
 /**
  * One lobby, as somebody outside it sees it: the code, how full it is, what

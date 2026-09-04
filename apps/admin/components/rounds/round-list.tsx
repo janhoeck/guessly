@@ -1,0 +1,144 @@
+import * as React from "react"
+import Link from "next/link"
+import { LANGUAGES, isTopicId, topicById } from "@guessly/protocol"
+import type { BankedRoundRecord } from "@guessly/bank"
+
+import { RoundThumb } from "@/components/rounds/round-thumb"
+import { Badge } from "@guessly/ui/components/ui/badge"
+import { ROUNDS_PER_PAGE, isFiltered, roundsHref, type RoundQuery } from "@/lib/query"
+
+/**
+ * A page of the bank as a table, and the three things it can be instead of
+ * one: an empty bank, a filter nothing matches, and a page past the end.
+ * They read very differently to an operator and none is allowed to render as
+ * another.
+ */
+function RoundList({
+  query,
+  rounds,
+  total,
+}: {
+  query: RoundQuery
+  rounds: BankedRoundRecord[]
+  total: number
+}) {
+  if (total === 0) {
+    return isFiltered(query.filter) ? (
+      <Notice>
+        Nothing matches that. Loosen the filter, or{" "}
+        <Link href="/rounds" className="text-primary underline-offset-4 hover:underline">
+          show everything
+        </Link>
+        .
+      </Notice>
+    ) : (
+      <Notice>
+        The bank is empty. Run <code className="font-mono text-foreground">pnpm fill</code> for a
+        while and the shelves will fill up here.
+      </Notice>
+    )
+  }
+
+  if (rounds.length === 0) {
+    return (
+      <Notice>
+        Nothing on this page.{" "}
+        <Link
+          href={roundsHref({ ...query, page: 1 })}
+          className="text-primary underline-offset-4 hover:underline"
+        >
+          Back to the first
+        </Link>
+        .
+      </Notice>
+    )
+  }
+
+  const from = (query.page - 1) * ROUNDS_PER_PAGE + 1
+  const to = from + rounds.length - 1
+
+  return (
+    <div className="flex flex-col gap-3">
+      <p className="text-xs tracking-[0.2em] text-muted-foreground uppercase">
+        {from}–{to} of {total}
+      </p>
+
+      <div className="overflow-x-auto rounded-xl bg-card ring-1 ring-border/60">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-xs tracking-[0.2em] text-muted-foreground uppercase">
+              <th scope="col" className="px-4 py-3 font-medium">
+                Round
+              </th>
+              <th scope="col" className="px-4 py-3 font-medium">
+                Topic
+              </th>
+              {LANGUAGES.map((language) => (
+                <th key={language.id} scope="col" className="px-4 py-3 font-medium">
+                  {language.label}
+                </th>
+              ))}
+              <th scope="col" className="px-4 py-3 text-right font-medium">
+                Dealt
+              </th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-border/40">
+            {rounds.map((round) => (
+              <RoundRow key={round.id} round={round} />
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+function RoundRow({ round }: { round: BankedRoundRecord }) {
+  const topic = isTopicId(round.topic) ? topicById(round.topic) : null
+
+  return (
+    <tr className="transition-colors hover:bg-accent/40">
+      <th scope="row" className="px-4 py-2.5 text-left font-normal">
+        <Link
+          href={`/rounds/${round.id}`}
+          className="flex min-w-0 items-center gap-3 rounded-sm outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+        >
+          <RoundThumb round={round} />
+          <span className="flex min-w-0 flex-col">
+            <span className="truncate font-medium">{round.subject}</span>
+            <span className="text-xs text-muted-foreground tabular-nums">#{round.id}</span>
+          </span>
+        </Link>
+      </th>
+      <td className="px-4 py-2.5">
+        <Badge variant="outline">{topic?.label ?? round.topic}</Badge>
+      </td>
+      {LANGUAGES.map((language) => {
+        const text = round.texts[language.id]
+        return (
+          <td key={language.id} lang={language.tag} className="max-w-56 truncate px-4 py-2.5">
+            {text === undefined ? (
+              <span aria-label={`Not written in ${language.label}`} className="text-muted-foreground/50">
+                —
+              </span>
+            ) : (
+              text.answer
+            )}
+          </td>
+        )
+      })}
+      <td className="px-4 py-2.5 text-right text-muted-foreground tabular-nums">{round.timesServed}</td>
+    </tr>
+  )
+}
+
+function Notice({ children }: { children: React.ReactNode }) {
+  return (
+    <p className="rounded-xl bg-card/50 p-6 text-sm text-muted-foreground ring-1 ring-border/40">
+      {children}
+    </p>
+  )
+}
+
+export { RoundList }

@@ -4,7 +4,7 @@ import * as React from "react"
 
 import { useServerClock } from "@/components/game/use-server-clock"
 import { playSound } from "@/lib/sounds"
-import { cn } from "@/lib/utils"
+import { cn } from "@guessly/ui/lib/utils"
 
 /**
  * The twenty seconds, drawn — and, at the end, heard.

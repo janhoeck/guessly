@@ -10,9 +10,15 @@ export { RoundSourceError } from "./error.js";
 export {
   answerKey,
   type BankedRound,
+  type BankedRoundRecord,
   type BankedRoundText,
   type NewBankedRound,
+  type RoundFilter,
+  type RoundPage,
+  type RoundPatch,
   type RoundRepository,
+  type RoundUpdateResult,
+  type TopicStock,
 } from "./repository.js";
 export { createPostgresRoundRepository } from "./postgres.js";
 export { createInMemoryRoundRepository } from "./memory.js";
@@ -20,6 +26,8 @@ export {
   createDiskImageStore,
   imageContentType,
   imageFilename,
+  MAX_IMAGE_BYTES,
+  sniffImage,
   type ImageStore,
   type StorableImage,
   type StoredImage,

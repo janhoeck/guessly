@@ -2,7 +2,7 @@
 
 import type { Player, RoundState } from "@guessly/protocol"
 
-import { Badge } from "@/components/ui/badge"
+import { Badge } from "@guessly/ui/components/ui/badge"
 
 /**
  * Who is playing, where they are, and — while a round is running — who is

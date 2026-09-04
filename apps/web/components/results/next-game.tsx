@@ -10,7 +10,7 @@ import {
 import { LanguageSelect, LanguageSummary } from "@/components/lobby/language-select"
 import { TargetScore, TargetScoreSummary } from "@/components/lobby/target-score"
 import { TopicSelect, TopicSummary } from "@/components/lobby/topic-select"
-import { Button } from "@/components/ui/button"
+import { Button } from "@guessly/ui/components/ui/button"
 
 /**
  * The next game, set up on the results screen.

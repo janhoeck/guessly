@@ -12,7 +12,7 @@ import { PlayerList } from "@/components/lobby/player-list"
 import { TargetScore, TargetScoreSummary } from "@/components/lobby/target-score"
 import { TopicSelect, TopicSummary } from "@/components/lobby/topic-select"
 import { LobbyCode } from "@/components/lobby/lobby-code"
-import { Button } from "@/components/ui/button"
+import { Button } from "@guessly/ui/components/ui/button"
 import {
   Dialog,
   DialogContent,
@@ -20,7 +20,7 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog"
+} from "@guessly/ui/components/ui/dialog"
 
 /**
  * The lobby: a modal, because it is a room you are *in* rather than a page you

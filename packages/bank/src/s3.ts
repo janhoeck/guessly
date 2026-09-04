@@ -1,5 +1,6 @@
 import type { Readable } from "node:stream";
 import {
+  DeleteObjectCommand,
   GetObjectCommand,
   HeadBucketCommand,
   HeadObjectCommand,
@@ -130,6 +131,18 @@ export function createS3ImageStore(config: S3ImageStoreConfig): ImageStore {
         contentLength: response.ContentLength ?? null,
         body: response.Body as Readable,
       };
+    },
+
+    async delete(filename) {
+      if (imageContentType(filename) === null) return;
+      try {
+        await client.send(new DeleteObjectCommand({ Bucket: config.bucket, Key: filename }));
+      } catch (error) {
+        // S3 itself answers 204 for a key that is not there; a store that
+        // says 404 instead is saying the same thing.
+        if (isNotFound(error)) return;
+        throw error;
+      }
     },
   };
 }

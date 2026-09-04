@@ -210,13 +210,21 @@ describe("a miss", () => {
   });
 
   it("fails the round, not the process, when the bank cannot be read", async () => {
+    const onFire = () => Promise.reject(new Error("database is on fire"));
     const broken: RoundRepository = {
       init: async () => {},
-      insert: () => Promise.reject(new Error("database is on fire")),
-      draw: () => Promise.reject(new Error("database is on fire")),
-      count: () => Promise.reject(new Error("database is on fire")),
+      insert: onFire,
+      draw: onFire,
+      count: onFire,
       answers: async () => [],
       aliases: async () => [],
+      // The admin's half. The game never calls any of it, so it burns too.
+      list: onFire,
+      get: onFire,
+      update: onFire,
+      delete: onFire,
+      imageReferences: onFire,
+      stock: onFire,
       close: async () => {},
     };
     const source = createBankedRoundSource({

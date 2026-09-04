@@ -85,6 +85,7 @@ function fakeImages(): ImageStore & { saved: StorableImage[] } {
     },
     has: async () => false,
     open: async () => null,
+    delete: async () => {},
   };
 }
 

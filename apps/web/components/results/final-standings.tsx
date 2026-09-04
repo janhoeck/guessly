@@ -3,7 +3,7 @@
 import { CrownIcon } from "lucide-react"
 import type { Player, RoundState } from "@guessly/protocol"
 
-import { Badge } from "@/components/ui/badge"
+import { Badge } from "@guessly/ui/components/ui/badge"
 
 /**
  * The one thing a finished game owes the room: who won, and where everybody

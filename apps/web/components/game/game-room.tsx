@@ -7,8 +7,8 @@ import { Countdown } from "@/components/game/countdown"
 import { RoundStage } from "@/components/game/round-stage"
 import { Scoreboard } from "@/components/game/scoreboard"
 import { useLobby } from "@/components/lobby/use-lobby"
-import { Wordmark } from "@/components/site/wordmark"
-import { Button } from "@/components/ui/button"
+import { Wordmark } from "@guessly/ui/components/wordmark"
+import { Button } from "@guessly/ui/components/ui/button"
 
 /**
  * The game screen, and the only client island on `/<CODE>`.

@@ -1,6 +1,6 @@
 import * as React from "react"
 
-import { cn } from "@/lib/utils"
+import { cn } from "@guessly/ui/lib/utils"
 
 /**
  * A round, frozen mid-clock. Twelve seconds left, two players already in, one

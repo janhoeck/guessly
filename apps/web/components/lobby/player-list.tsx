@@ -2,7 +2,7 @@
 
 import { MAX_PLAYERS_PER_LOBBY, type Player } from "@guessly/protocol"
 
-import { Badge } from "@/components/ui/badge"
+import { Badge } from "@guessly/ui/components/ui/badge"
 
 /**
  * Who is in the room, in join order.

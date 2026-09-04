@@ -8,8 +8,8 @@ import { useLobbyList } from "@/components/lobbies/use-lobby-list"
 import { LobbyRow } from "@/components/lobbies/lobby-row"
 import { LobbyPresence } from "@/components/lobby/lobby-presence"
 import { useLobby } from "@/components/lobby/use-lobby"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
+import { Input } from "@guessly/ui/components/ui/input"
+import { Label } from "@guessly/ui/components/ui/label"
 
 /**
  * The browse screen, and the only client island on `/lobbies`.

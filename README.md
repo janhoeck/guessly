@@ -76,7 +76,6 @@ inputs have not changed.
 | `pnpm dev` | Web, game server, admin and shared-package watchers together |
 | `pnpm fill` | Stocks the round bank with AI-generated rounds until Ctrl+C |
 | `pnpm fill -- --topic <id>` | The same, for the topics named only |
-| `pnpm migrate:images` | One-way move of any on-disk pictures into the bucket |
 | `pnpm build` | Builds the shared packages, then everything on top |
 | `pnpm start` | Runs the production builds |
 | `pnpm lint` | ESLint |
@@ -107,9 +106,3 @@ more variable: `ADMIN_PASSWORD`, which is the only thing between the internet
 and its delete button. It is optional — nothing else knows whether it is
 running — and it reads pictures out of the bucket itself, so it needs no
 `PUBLIC_BASE_URL` and no reachable game server.
-
-If you are coming from a checkout that still has pictures under
-`apps/game/data/images`, `pnpm migrate:images` moves them into the bucket. It
-verifies every file against the hash it is named by, skips what is already
-there, is safe to re-run, and deletes nothing — the directory is yours to
-remove once it reports that everything arrived.

@@ -5,8 +5,8 @@
   // Turbo runs tasks in strict env mode, so a variable the shell exports does
   // not reach a task unless it is named. These are runtime configuration rather
   // than build inputs, and some of them are secrets, so they are passed through
-  // rather than hashed into a cache key — `dev`, `start`, `fill` and
-  // `migrate:images` are uncached anyway. Local development reads
+  // rather than hashed into a cache key — `dev`, `start` and `fill` are
+  // uncached anyway. Local development reads
   // apps/game/.env instead; see config.ts. The AI credentials belong to `fill`
   // alone: the server never generates a round. The bucket belongs to all of
   // them, because the pictures are one bucket however many processes read it.
@@ -67,21 +67,6 @@
         "DEEPSEEK_VISION_MODEL",
         "SERPER_API_KEY",
         "DATABASE_URL",
-        "S3_ENDPOINT",
-        "S3_REGION",
-        "S3_BUCKET",
-        "S3_ACCESS_KEY_ID",
-        "S3_SECRET_ACCESS_KEY"
-      ]
-    },
-    // The one-way move of the old on-disk pictures into the bucket. DATA_DIR
-    // survives here and nowhere else: it is how the script is told where the
-    // files *were*, and no process reads it to decide anything any more.
-    "migrate:images": {
-      "dependsOn": ["^build"],
-      "cache": false,
-      "passThroughEnv": [
-        "DATA_DIR",
         "S3_ENDPOINT",
         "S3_REGION",
         "S3_BUCKET",

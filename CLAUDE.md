@@ -167,10 +167,7 @@ The pictures moved because the alternative was a *volume*. A `DATA_DIR` on a
 disk that survives restarts is a promise a deploy has to keep, and the deploy
 that forgets it does not fail — it comes up with an empty image directory
 beside a full database and 404s every round. The server now carries nothing on
-disk at all. `pnpm migrate:images` is the one-way move that got the existing
-pictures across: it verifies each file against the hash it is named by, skips
-what is already in the bucket, deletes nothing, and exits non-zero if anything
-was left behind.
+disk at all.
 
 `tools/fill/src/content/deepseek.ts` produces rounds, and three things make the
 reply safe to parse, none of them hope:
@@ -617,8 +614,7 @@ and `DEEPSEEK_API_KEY`, `DEEPSEEK_MODEL`, `DEEPSEEK_REASONING_EFFORT`,
 `DATABASE_URL` and the same `S3_*` on `fill` — passed through
 rather than hashed, because they are runtime configuration and some of them
 are secrets. A new runtime variable has to be added there or it will silently
-go missing. `DATA_DIR` survives on the `migrate:images` task alone, which is
-the only thing left that wants to know where the pictures used to be.
+go missing.
 
 The admin reads its configuration the Next way — `apps/admin/.env` is loaded
 by Next itself — and then, in `lib/config.ts`, reads `apps/game/.env` as a

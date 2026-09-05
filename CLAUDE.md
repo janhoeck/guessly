@@ -105,7 +105,7 @@ calls the AI** — it does not even depend on the SDK:
   burning retries. `pnpm fill -- --topic <id>` confines a run to the shelves
   named — repeat the flag, or comma-separate the ids — with the same loop,
   gauge and benching over a shorter list, so the topic a lobby just failed on
-  can be topped up without paying for the other eleven first. `parseFillArgs`
+  can be topped up without paying for the other thirteen first. `parseFillArgs`
   in `config.ts` reads it, and refuses an id it does not know rather than
   quietly filling everything.
 - **The bank is the only way a round reaches players**, so what used to be its
@@ -276,9 +276,9 @@ be made — the model gone, a reply that is not JSON — lets the picture throug
 *unverified* with a line in the log, and `DEEPSEEK_VISION_MODEL=` (empty)
 turns it off on purpose. The rules that make a round good have not moved into
 the judge; the prompt still says a game is a mid-game screenshot and never
-its cover, a film is a frame and never its poster, a logo is the symbol
-alone — the judge is what makes those rules cost something when they are
-broken.
+its cover, a film or a series is a frame and never its poster, a YouTuber
+is a face and never a thumbnail, a logo is the symbol alone — the judge is
+what makes those rules cost something when they are broken.
 
 Image rounds still return up to five candidate URLs, best first, and the
 first that downloads as an actual image *and passes the judge* wins
@@ -472,12 +472,12 @@ has stamped.
 ## Topics
 
 The catalogue lives in `packages/protocol/src/topics.ts` and is the one source
-both sides read: twelve topics, each carrying the `RoundKind` it produces.
-Eleven are `image`; `music` is the only `lyrics` topic, so a host who switches it
+both sides read: fourteen topics, each carrying the `RoundKind` it produces.
+Thirteen are `image`; `music` is the only `lyrics` topic, so a host who switches it
 off has quietly turned the game into pictures only — which is why the mapping is
 data rather than prose, and why the lobby can say so out loud.
 
-Every lobby stores its own selection. All twelve are on by default, at least one
+Every lobby stores its own selection. All fourteen are on by default, at least one
 is required, and the stored list is deduplicated and kept in catalogue order, so
 two identical selections are literally equal however they were clicked.
 

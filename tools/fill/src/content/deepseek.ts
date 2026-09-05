@@ -162,7 +162,7 @@ export const SEARCH_IMAGES_TOOL_NAME = "search_images";
 /**
  * The lookup, offered on image rounds only — a lyrics round has nothing to
  * look up, and the two tool lists are two cache prefixes rather than one
- * confused prompt. Eleven of twelve topics are image rounds, so the warm
+ * confused prompt. Every topic but music is an image round, so the warm
  * prefix stays warm.
  */
 const SEARCH_IMAGES_TOOL: OpenAI.Chat.Completions.ChatCompletionTool = {

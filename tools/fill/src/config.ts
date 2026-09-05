@@ -149,7 +149,7 @@ const USAGE = "usage: pnpm fill [-- --topic <id>[,<id>...] ...]";
  * Read the command line: `pnpm fill -- --topic flags` fills one shelf and
  * leaves the rest alone. The loop, the gauge and the benching are the same,
  * over a shorter list — so the tool can top up the topic a lobby just failed
- * on without paying for eleven others first, or stock a new topic on its own.
+ * on without paying for the other shelves first, or stock a new topic on its own.
  * `--topic` may be repeated, or given a comma-separated list; the result is
  * deduplicated and put in catalogue order, the way a lobby's selection is.
  *

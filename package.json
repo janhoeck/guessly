@@ -9,6 +9,7 @@
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
     "fill": "turbo run fill",
+    "fill:series": "turbo run fill -- --topic series",
     "migrate:images": "turbo run migrate:images",
     "shadcn": "pnpm --filter @guessly/ui exec shadcn",
     "test": "turbo run test",

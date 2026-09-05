@@ -35,6 +35,9 @@ export const TOPICS = [
   { id: "flags", label: "Flags", kind: "image", hint: "Countries and territories" },
   { id: "logos", label: "Logos & brands", kind: "image", hint: "Marks with the name cropped out" },
   { id: "movies", label: "Movies", kind: "image", hint: "Stills, props and faces from the films" },
+  // The scene a show is known for — the walkers, not the title card. A
+  // poster spells the title out and a cast photo is a row of faces.
+  { id: "series", label: "TV series", kind: "image", hint: "Scenes from the shows, never the title card" },
   // "In-game screenshots" used to be an instruction to go and fail: the open
   // archives hold none for most modern games. The lookup now asks the Steam
   // store and the web as well, which is where the screenshots are.
@@ -45,7 +48,12 @@ export const TOPICS = [
   { id: "sports", label: "Sports", kind: "image", hint: "Kit, venues, moments" },
   { id: "technology", label: "Technology", kind: "image", hint: "Hardware, interfaces, gadgets" },
   { id: "art", label: "Art", kind: "image", hint: "Paintings, sculpture, photography" },
-  { id: "mainstream", label: "Pop culture", kind: "image", hint: "Memes, TV, the faces behind them" },
+  // "TV" left this hint when series got a shelf of their own: a show banked
+  // here would be the same round twice, and dedup only reads one shelf.
+  { id: "mainstream", label: "Pop culture", kind: "image", hint: "Memes, viral moments, the faces behind them" },
+  // The face and nothing else: a thumbnail carries the channel's name and a
+  // video frame carries its overlay. The answer is the name the channel goes by.
+  { id: "youtubers", label: "YouTubers", kind: "image", hint: "Creators, shown by their face alone" },
   { id: "music", label: "Music", kind: "lyrics", hint: "A snippet of lyrics — name the song" },
 ] as const satisfies readonly TopicDefinition[];
 

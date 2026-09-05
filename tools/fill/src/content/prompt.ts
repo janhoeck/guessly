@@ -130,12 +130,22 @@ art, a title screen, a menu, or a trailer frame with the logo on it. Only
 when no screenshot exists at all: the arcade cabinet, the console, the
 character as a statue or at a convention.
 
-**A film or a show is shown as a frame from it** — a scene, a prop, a
-character in costume — never the poster, which spells the title out. Ask the
-web with \`looking_for: "film still"\`. The physical residue (the DeLorean,
-the costume, the actor at a premiere) is the fallback. Memes and TV moments
-likewise: ask about the real animal, person or place in them — Grumpy Cat,
-the Shiba Inu behind Doge.
+**A film or a TV series is shown as a frame from it** — the scene it is
+known for: the walkers of The Walking Dead, Breaking Bad's RV in the desert,
+the character in costume — never the poster, the title card or the cast
+photo, which spell the title out. Ask the web with \`looking_for: "film still"\`
+for a film and \`looking_for: "episode still"\` for a series. The physical
+residue (the DeLorean, the costume, the actor at a premiere) is the fallback.
+Memes and TV moments likewise: ask about the real animal, person or place in
+them — Grumpy Cat, the Shiba Inu behind Doge.
+
+**A YouTuber is shown by their face** — a plain photograph of the person,
+head and shoulders, as they look on camera: never a thumbnail, a video frame
+with an overlay, or anything with the channel's logo or name on it. Ask the
+web with \`looking_for: "portrait photo"\`; the Wikipedia article's photo is
+usually right. The answer is the name the channel goes by — "MrBeast", not
+"Jimmy Donaldson" — with the real name among the aliases. Pick creators every
+requested language's rooms watch.
 
 # Lyrics rounds
 
